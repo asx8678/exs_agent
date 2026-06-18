@@ -21,6 +21,9 @@ defmodule NanoAgent.Approvals do
   @doc "Ids of requests awaiting a manual decision."
   def pending, do: GenServer.call(__MODULE__, :pending)
 
+  @doc "Pending requests with their tool name + input, for the dashboard."
+  def pending_details, do: GenServer.call(__MODULE__, :pending_details)
+
   def approve(id), do: GenServer.cast(__MODULE__, {:resolve, id, :approved})
   def deny(id), do: GenServer.cast(__MODULE__, {:resolve, id, :denied})
 
@@ -48,11 +51,19 @@ defmodule NanoAgent.Approvals do
         # Default to deny if no human acts within the timeout — never hang the agent.
         ms = Application.get_env(:nano_agent, :approval_timeout_ms, 300_000)
         timer = Process.send_after(self(), {:timeout, id}, ms)
-        {:noreply, put_in(state.pending[id], {from, timer})}
+        entry = {from, timer, %{name: meta[:name], input: meta[:input]}}
+        {:noreply, put_in(state.pending[id], entry)}
     end
   end
 
   def handle_call(:pending, _from, state), do: {:reply, Map.keys(state.pending), state}
+
+  def handle_call(:pending_details, _from, state) do
+    details =
+      Enum.map(state.pending, fn {id, {_from, _timer, meta}} -> Map.put(meta, :id, id) end)
+
+    {:reply, details, state}
+  end
 
   @impl true
   def handle_cast({:resolve, id, decision}, state), do: resolve(state, id, decision)
@@ -65,7 +76,7 @@ defmodule NanoAgent.Approvals do
       {nil, _} ->
         {:noreply, state}
 
-      {{from, timer}, pending} ->
+      {{from, timer, _meta}, pending} ->
         Process.cancel_timer(timer)
         GenServer.reply(from, decision)
         NanoAgent.Events.publish(:approvals, :approval_resolved, %{id: id, decision: decision})

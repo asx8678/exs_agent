@@ -75,7 +75,12 @@ Flags: `--plan` (single plan, skip decomposition), `--json` (NDJSON), `--dir DIR
 | GET | `/api/events` | recent events (JSON) |
 | GET | `/api/runs` | run history (JSON) |
 | GET | `/runs/:id` | one run (JSON) |
+| GET | `/api/approvals` | pending approval requests (JSON) |
 | POST | `/runs` | start: `{"plan": "..."}` or `{"goal": "..."}` |
+| POST | `/approvals/:id` | decide: `{"decision": "approve"|"deny"}` |
+
+The dashboard shows per-agent cards with live transcripts, token/status/duration,
+and **approve/deny buttons** for runs paused on the approval gate (`:manual` mode).
 
 ```bash
 curl -XPOST localhost:4000/runs -d '{"plan":"echo hi"}'

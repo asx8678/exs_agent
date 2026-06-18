@@ -11,3 +11,6 @@ erl_crash.dump
 
 # escript build artifact
 /nano_agent
+
+# local secrets
+.env

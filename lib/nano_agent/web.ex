@@ -6,11 +6,15 @@ defmodule NanoAgent.Web do
     * `GET  /`            — dashboard HTML
     * `GET  /events`      — SSE stream of live events
     * `GET  /api/events`  — recent events snapshot (JSON)
-    * `GET  /api/runs`    — persisted run history (JSON)
-    * `GET  /runs/:id`    — one persisted run (JSON)
-    * `POST /runs`        — start a run: body `{"plan": "..."}` or `{"goal": "..."}`
+    * `GET  /api/runs`      — persisted run history (JSON)
+    * `GET  /api/approvals` — pending approval requests (JSON)
+    * `GET  /runs/:id`      — one persisted run (JSON)
+    * `POST /runs`          — start a run: body `{"plan": "..."}` or `{"goal": "..."}`
+    * `POST /approvals/:id` — decide: body `{"decision": "approve" | "deny"}`
 
-  Drop-in replaceable by Phoenix/LiveView; this keeps the app dependency-free.
+  The dashboard is a single self-contained page (per-agent cards, live transcripts,
+  token/status/duration, and approve/deny buttons). Drop-in replaceable by Phoenix
+  LiveView; this keeps the app dependency-free.
   """
   use GenServer
   require Logger
@@ -109,12 +113,41 @@ defmodule NanoAgent.Web do
     do: respond(sock, 200, "application/json", snapshot_json())
 
   defp route(sock, :GET, "/api/runs", _), do: respond(sock, 200, "application/json", runs_json())
+
+  defp route(sock, :GET, "/api/approvals", _),
+    do: respond(sock, 200, "application/json", approvals_json())
+
   defp route(sock, :GET, "/events", _), do: stream_sse(sock)
   defp route(sock, :POST, "/runs", body), do: start_run(sock, body)
 
   defp route(sock, :GET, "/runs/" <> id, _) when id != "", do: run_detail(sock, id)
+  defp route(sock, :POST, "/approvals/" <> id, body) when id != "", do: decide(sock, id, body)
 
   defp route(sock, _method, _path, _body), do: respond(sock, 404, "text/plain", "not found")
+
+  defp decide(sock, id, body) do
+    case safe_decode(body) do
+      %{"decision" => "approve"} ->
+        NanoAgent.Approvals.approve(id)
+        respond(sock, 200, "application/json", encode(%{"ok" => true}))
+
+      %{"decision" => "deny"} ->
+        NanoAgent.Approvals.deny(id)
+        respond(sock, 200, "application/json", encode(%{"ok" => true}))
+
+      _ ->
+        respond(
+          sock,
+          400,
+          "application/json",
+          encode(%{"error" => ~s(expected {"decision":"approve"|"deny"})})
+        )
+    end
+  end
+
+  defp approvals_json do
+    NanoAgent.Approvals.pending_details() |> jsonable() |> encode()
+  end
 
   defp start_run(sock, body) do
     case safe_decode(body) do
@@ -277,33 +310,102 @@ defmodule NanoAgent.Web do
     """
     <!doctype html><html><head><meta charset="utf-8"><title>nano_agent fleet</title>
     <style>
-      body{font:14px/1.5 ui-monospace,Menlo,Consolas,monospace;margin:0;background:#0b0e14;color:#cdd6f4}
-      header{padding:12px 16px;background:#11151c;border-bottom:1px solid #1f2430;font-weight:600}
-      header .dot{color:#a6e3a1}
-      #log{padding:8px 16px}
-      .e{padding:4px 8px;margin:3px 0;border-left:3px solid #45475a;background:#11151c;border-radius:0 4px 4px 0}
-      .e .t{color:#89b4fa;font-weight:600}.e .r{color:#6c7086}
-      .started{border-color:#89b4fa}.tool_call{border-color:#f9e2af}.tool_result{border-color:#94e2d5}
-      .ok{border-color:#a6e3a1}.error{border-color:#f38ba8}.max_iterations{border-color:#fab387}.planned{border-color:#cba6f7}
-      pre{margin:2px 0 0;white-space:pre-wrap;color:#bac2de}
+      :root{--bg:#0b0e14;--panel:#11151c;--line:#1f2430;--fg:#cdd6f4;--dim:#6c7086}
+      *{box-sizing:border-box}
+      body{font:13px/1.55 ui-monospace,Menlo,Consolas,monospace;margin:0;background:var(--bg);color:var(--fg)}
+      header{display:flex;gap:16px;align-items:center;padding:10px 16px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0}
+      header b{font-weight:600}header .dot{color:#a6e3a1}
+      .counts span{margin-left:12px;color:var(--dim)}
+      .counts b{color:var(--fg)}
+      #approvals:empty{display:none}
+      #approvals{margin:12px 16px;padding:10px 12px;background:#241a1a;border:1px solid #6f3b3b;border-radius:8px}
+      #approvals h3{margin:0 0 6px;font-size:12px;color:#f9c2c2;text-transform:uppercase;letter-spacing:.05em}
+      .appr{display:flex;align-items:center;gap:8px;padding:4px 0}
+      .appr code{color:#f9e2af}
+      .appr .grow{flex:1;color:#bac2de;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      button{font:inherit;cursor:pointer;border:0;border-radius:5px;padding:3px 10px}
+      .ok-btn{background:#2e6b3e;color:#dff5e1}.no-btn{background:#6b2e2e;color:#f5dede}
+      #grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px;padding:12px 16px}
+      .card{background:var(--panel);border:1px solid var(--line);border-left:3px solid #45475a;border-radius:0 8px 8px 0}
+      .card.running{border-left-color:#89b4fa}.card.ok{border-left-color:#a6e3a1}
+      .card.error{border-left-color:#f38ba8}.card.max_iterations,.card.budget{border-left-color:#fab387}
+      .card h4{margin:0;padding:8px 10px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center}
+      .badge{font-size:11px;padding:1px 7px;border-radius:10px;background:#1f2430;color:#cdd6f4}
+      .card.running .badge{background:#1e2b44;color:#89b4fa}.card.ok .badge{background:#1e3a26;color:#a6e3a1}
+      .card.error .badge{background:#3a1e22;color:#f38ba8}
+      .card h4 .ref{color:var(--dim);font-size:11px}
+      .card h4 .meta{margin-left:auto;color:var(--dim);font-size:11px}
+      .plan{padding:6px 10px;color:#bac2de;white-space:pre-wrap;border-bottom:1px solid var(--line);max-height:64px;overflow:auto}
+      .tx{padding:4px 10px 8px;max-height:240px;overflow:auto}
+      .tx div{padding:2px 0;border-bottom:1px dashed #1a1f29}
+      .tx .call{color:#f9e2af}.tx .res{color:#94e2d5}.tx .txt{color:#cdd6f4}
+      .tx code{color:#fff}
     </style></head><body>
-    <header><span class="dot">●</span> nano_agent fleet — live</header>
-    <div id="log"></div>
+    <header>
+      <b><span class="dot">●</span> nano_agent fleet</b>
+      <span class="counts" id="counts"></span>
+    </header>
+    <div id="approvals"></div>
+    <div id="grid"></div>
     <script>
-      const log=document.getElementById('log');
-      function row(e){
-        const d=document.createElement('div'); d.className='e '+e.type;
-        const ref=String(e.ref).replace('#Reference','ref').slice(0,16);
-        const p=e.payload||{}; let body='';
-        if(p.name) body=p.name+' '+JSON.stringify(p.input||p.output_preview||'');
-        else if(p.summary) body=p.summary; else body=JSON.stringify(p);
-        d.innerHTML='<span class="t">'+e.type+'</span> <span class="r">'+ref+'</span><pre>'+
-          body.replace(/</g,'&lt;')+'</pre>';
-        log.prepend(d);
+      const runs={}, approvals={};
+      const $=id=>document.getElementById(id);
+      const esc=s=>String(s).replace(/[&<]/g,c=>c=='&'?'&amp;':'&lt;');
+      const shortRef=r=>String(r).replace('#Reference','').replace(/[<>]/g,'').slice(0,14);
+
+      function getRun(ref){
+        if(!runs[ref]) runs[ref]={ref,status:'running',plan:'',tokens:null,tools:0,dur:null,tx:[],at:0};
+        return runs[ref];
       }
-      fetch('/api/events').then(r=>r.json()).then(es=>es.forEach(row)).catch(()=>{});
+      function apply(e){
+        const p=e.payload||{}; if(e.at) {}
+        if(e.type=='approval_requested'){approvals[p.id]={id:p.id,name:p.name,input:p.input};return;}
+        if(e.type=='approval_resolved'){delete approvals[p.id];return;}
+        if(e.type=='planned') return;
+        const r=getRun(e.ref); r.at=e.at||r.at;
+        if(e.type=='started'){r.status='running'; r.plan=p.plan||p.run_id||'';}
+        else if(e.type=='tool_call'){r.tools++; r.tx.push({k:'call',t:p.name+' '+JSON.stringify(p.input||{})});}
+        else if(e.type=='tool_result'){r.tx.push({k:'res',t:(p.name||'')+' → '+(p.output_preview||'')});}
+        else if(['ok','error','max_iterations','budget'].includes(e.type)){
+          r.status=e.type; r.tokens=p.tokens; r.tools=p.tool_calls!=null?p.tool_calls:r.tools; r.dur=p.duration_ms;
+          if(p.summary) r.tx.push({k:'txt',t:p.summary});
+        }
+      }
+      function render(){
+        // approvals
+        const ap=Object.values(approvals);
+        $('approvals').innerHTML = ap.length
+          ? '<h3>approvals needed</h3>'+ap.map(a=>
+              '<div class="appr"><code>'+esc(a.name)+'</code>'+
+              '<span class="grow">'+esc(JSON.stringify(a.input||{}))+'</span>'+
+              '<button class="ok-btn" onclick="decide(\\''+a.id+'\\',\\'approve\\')">approve</button>'+
+              '<button class="no-btn" onclick="decide(\\''+a.id+'\\',\\'deny\\')">deny</button></div>').join('')
+          : '';
+        // counts
+        const all=Object.values(runs);
+        const c=t=>all.filter(r=>r.status==t).length;
+        $('counts').innerHTML='<span>runs <b>'+all.length+'</b></span><span>running <b>'+c('running')+
+          '</b></span><span>ok <b>'+c('ok')+'</b></span><span>failed <b>'+(c('error'))+'</b></span>';
+        // cards (newest activity first)
+        $('grid').innerHTML=all.sort((a,b)=>b.at-a.at).map(r=>{
+          const meta=[r.tools+' tools', r.tokens?(r.tokens.output+' out tok'):'', r.dur?(r.dur+'ms'):'']
+            .filter(Boolean).join(' · ');
+          const tx=r.tx.slice(-40).map(x=>'<div class="'+(x.k=='call'?'call':x.k=='res'?'res':'txt')+'">'+esc(x.t)+'</div>').join('');
+          return '<div class="card '+r.status+'"><h4><span class="badge">'+r.status+'</span>'+
+            '<span class="ref">'+shortRef(r.ref)+'</span><span class="meta">'+meta+'</span></h4>'+
+            (r.plan?'<div class="plan">'+esc(r.plan)+'</div>':'')+'<div class="tx">'+tx+'</div></div>';
+        }).join('');
+      }
+      function decide(id,decision){
+        fetch('/approvals/'+id,{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({decision})}); delete approvals[id]; render();
+      }
+      Promise.all([
+        fetch('/api/events').then(r=>r.json()).then(es=>es.forEach(apply)).catch(()=>{}),
+        fetch('/api/approvals').then(r=>r.json()).then(as=>as.forEach(a=>approvals[a.id]=a)).catch(()=>{})
+      ]).then(render);
       const src=new EventSource('/events');
-      src.onmessage=ev=>{try{row(JSON.parse(ev.data))}catch(e){}};
+      src.onmessage=ev=>{try{apply(JSON.parse(ev.data));render()}catch(e){}};
     </script></body></html>
     """
   end
