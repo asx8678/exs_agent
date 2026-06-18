@@ -12,9 +12,9 @@ defmodule NanoAgent.Web do
     * `POST /runs`          — start a run: body `{"plan": "..."}` or `{"goal": "..."}`
     * `POST /approvals/:id` — decide: body `{"decision": "approve" | "deny"}`
 
-  The dashboard is a single self-contained page (per-agent cards, live transcripts,
-  token/status/duration, and approve/deny buttons). Drop-in replaceable by Phoenix
-  LiveView; this keeps the app dependency-free.
+  The dashboard is a single self-contained orchestration console: a dispatch bar
+  (start a goal/plan), per-agent cards with live transcripts/todos, cancel +
+  approve/deny buttons, a stats strip, and goal grouping. Zero dependencies.
   """
   use GenServer
   require Logger
@@ -284,8 +284,15 @@ defmodule NanoAgent.Web do
         end
 
       %{"goal" => goal} when is_binary(goal) ->
-        Task.start(fn -> NanoAgent.run_goal(goal) end)
-        respond(sock, 202, "application/json", encode(%{"status" => "started"}))
+        goal_id = :crypto.strong_rand_bytes(6) |> Base.encode16(case: :lower)
+        Task.start(fn -> NanoAgent.run_goal(goal, goal_id: goal_id) end)
+
+        respond(
+          sock,
+          202,
+          "application/json",
+          encode(%{"goal_id" => goal_id, "status" => "started"})
+        )
 
       _ ->
         respond(
@@ -463,11 +470,27 @@ defmodule NanoAgent.Web do
       .tx code{color:#fff}
       .todos{padding:6px 10px;border-bottom:1px solid var(--line)}
       .td{color:#9399b2}.td.completed{color:#a6e3a1}.td.in_progress{color:#f9e2af;font-weight:600}
+      .card.cancelled{border-left-color:#9399b2}.card.cancelled .badge{background:#2a2f3a;color:#9399b2}
+      .card h4 .cancel{margin-left:auto;font-size:11px;padding:1px 8px}
+      .card h4 .cancel+.meta{margin-left:8px}
+      #dispatch{display:flex;gap:8px;flex:1;min-width:280px}
+      #cmd{flex:1;background:#0b0e14;border:1px solid var(--line);color:var(--fg);border-radius:5px;padding:5px 9px;font:inherit}
+      #cmd:focus{outline:1px solid #89b4fa}
+      .goal{margin:12px 16px;border:1px solid #2a2f3a;border-radius:8px;overflow:hidden}
+      .ghead{padding:7px 12px;background:#161b26;color:#cba6f7;font-weight:600;border-bottom:1px solid #2a2f3a;display:flex;gap:10px;align-items:center}
+      .ghead .gmeta{margin-left:auto;color:var(--dim);font-weight:400;font-size:11px}
+      .ggrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px;padding:10px}
     </style></head><body>
     <header>
-      <b><span class="dot">●</span> nano_agent fleet</b>
+      <b><span class="dot">●</span> nano_agent</b>
+      <span id="dispatch">
+        <input id="cmd" placeholder="describe a goal or plan, then Run…"
+               onkeydown="if(event.key=='Enter')dispatch('goal')">
+        <button class="ok-btn" onclick="dispatch('goal')">Run goal</button>
+        <button onclick="dispatch('plan')">Run plan</button>
+      </span>
       <span class="counts" id="counts"></span>
-      <span class="counts" id="stats" style="margin-left:auto"></span>
+      <span class="counts" id="stats"></span>
     </header>
     <div id="approvals"></div>
     <div id="grid"></div>
@@ -479,26 +502,37 @@ defmodule NanoAgent.Web do
       const shortRef=r=>String(r).replace('#Reference','').replace(/[<>]/g,'').slice(0,14);
 
       function getRun(ref){
-        if(!runs[ref]) runs[ref]={ref,status:'running',plan:'',tokens:null,tools:0,dur:null,tx:[],todos:null,at:0};
+        if(!runs[ref]) runs[ref]={ref,run_id:null,goal_id:null,status:'running',plan:'',tokens:null,tools:0,dur:null,tx:[],todos:null,at:0};
         return runs[ref];
       }
       function apply(e){
-        const p=e.payload||{}; if(e.at) {}
+        const p=e.payload||{};
         if(e.type=='approval_requested'){approvals[p.id]={id:p.id,name:p.name,input:p.input};return;}
         if(e.type=='approval_resolved'){delete approvals[p.id];return;}
         if(e.type=='planned') return;
         const r=getRun(e.ref); r.at=e.at||r.at;
-        if(e.type=='started'){r.status='running'; r.plan=p.plan||p.run_id||'';}
+        if(e.type=='started'){r.status='running'; r.plan=p.plan||''; r.run_id=p.run_id||r.run_id; r.goal_id=p.goal_id||r.goal_id;}
         else if(e.type=='todos'){r.todos=p.items;}
         else if(e.type=='tool_call'){if(p.name!='todo_write')r.tools++; r.tx.push({k:'call',t:p.name+' '+JSON.stringify(p.input||{})});}
         else if(e.type=='tool_result'){r.tx.push({k:'res',t:(p.name||'')+' → '+(p.output_preview||'')});}
-        else if(['ok','error','max_iterations','budget'].includes(e.type)){
+        else if(['ok','error','max_iterations','budget','cancelled'].includes(e.type)){
           r.status=e.type; r.tokens=p.tokens; r.tools=p.tool_calls!=null?p.tool_calls:r.tools; r.dur=p.duration_ms;
+          if(p.goal_id)r.goal_id=p.goal_id; if(p.run_id)r.run_id=p.run_id;
           if(p.summary) r.tx.push({k:'txt',t:p.summary});
         }
       }
+      function card(r){
+        const meta=[r.tools+' tools', r.tokens?(r.tokens.output+' out tok'):'', r.dur?(r.dur+'ms'):''].filter(Boolean).join(' · ');
+        const tx=r.tx.slice(-40).map(x=>'<div class="'+(x.k=='call'?'call':x.k=='res'?'res':'txt')+'">'+esc(x.t)+'</div>').join('');
+        const mark={completed:'✓',in_progress:'▸',pending:'☐'};
+        const todos=r.todos?'<div class="todos">'+r.todos.map(t=>
+          '<div class="td '+(t.status||'pending')+'">'+(mark[t.status]||'☐')+' '+esc(t.content)+'</div>').join('')+'</div>':'';
+        const cancel=(r.status=='running'&&r.run_id)?'<button class="no-btn cancel" onclick="cancelRun(\\''+r.run_id+'\\')">cancel</button>':'';
+        return '<div class="card '+r.status+'"><h4><span class="badge">'+r.status+'</span>'+
+          '<span class="ref">'+shortRef(r.ref)+'</span>'+cancel+'<span class="meta">'+meta+'</span></h4>'+
+          (r.plan?'<div class="plan">'+esc(r.plan)+'</div>':'')+todos+'<div class="tx">'+tx+'</div></div>';
+      }
       function render(){
-        // approvals
         const ap=Object.values(approvals);
         $('approvals').innerHTML = ap.length
           ? '<h3>approvals needed</h3>'+ap.map(a=>
@@ -507,27 +541,34 @@ defmodule NanoAgent.Web do
               '<button class="ok-btn" onclick="decide(\\''+a.id+'\\',\\'approve\\')">approve</button>'+
               '<button class="no-btn" onclick="decide(\\''+a.id+'\\',\\'deny\\')">deny</button></div>').join('')
           : '';
-        // counts
-        const all=Object.values(runs);
+        const all=Object.values(runs).sort((a,b)=>b.at-a.at);
         const c=t=>all.filter(r=>r.status==t).length;
         $('counts').innerHTML='<span>runs <b>'+all.length+'</b></span><span>running <b>'+c('running')+
           '</b></span><span>ok <b>'+c('ok')+'</b></span><span>failed <b>'+(c('error'))+'</b></span>';
-        // cards (newest activity first)
-        $('grid').innerHTML=all.sort((a,b)=>b.at-a.at).map(r=>{
-          const meta=[r.tools+' tools', r.tokens?(r.tokens.output+' out tok'):'', r.dur?(r.dur+'ms'):'']
-            .filter(Boolean).join(' · ');
-          const tx=r.tx.slice(-40).map(x=>'<div class="'+(x.k=='call'?'call':x.k=='res'?'res':'txt')+'">'+esc(x.t)+'</div>').join('');
-          const mark={completed:'✓',in_progress:'▸',pending:'☐'};
-          const todos=r.todos?'<div class="todos">'+r.todos.map(t=>
-            '<div class="td '+(t.status||'pending')+'">'+(mark[t.status]||'☐')+' '+esc(t.content)+'</div>').join('')+'</div>':'';
-          return '<div class="card '+r.status+'"><h4><span class="badge">'+r.status+'</span>'+
-            '<span class="ref">'+shortRef(r.ref)+'</span><span class="meta">'+meta+'</span></h4>'+
-            (r.plan?'<div class="plan">'+esc(r.plan)+'</div>':'')+todos+'<div class="tx">'+tx+'</div></div>';
-        }).join('');
+        // group by goal; standalone runs shown loose
+        const goals={}, loose=[];
+        all.forEach(r=>{ if(r.goal_id){(goals[r.goal_id]=goals[r.goal_id]||[]).push(r);} else loose.push(r); });
+        let html='';
+        Object.keys(goals).forEach(gid=>{
+          const m=goals[gid], ok=m.filter(x=>x.status=='ok').length, run=m.filter(x=>x.status=='running').length;
+          html+='<div class="goal"><div class="ghead">▤ goal '+gid.slice(0,8)+
+            '<span class="gmeta">'+m.length+' plans · '+ok+' ok · '+run+' running</span></div>'+
+            '<div class="ggrid">'+m.map(card).join('')+'</div></div>';
+        });
+        if(loose.length) html+='<div class="ggrid">'+loose.map(card).join('')+'</div>';
+        $('grid').innerHTML=html;
       }
       function decide(id,decision){
         fetch('/approvals/'+id+Q,{method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({decision})}); delete approvals[id]; render();
+      }
+      function cancelRun(id){
+        fetch('/runs/'+id+'/cancel'+Q,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+      }
+      function dispatch(kind){
+        const el=$('cmd'), v=el.value.trim(); if(!v) return;
+        fetch('/runs'+Q,{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify(kind=='goal'?{goal:v}:{plan:v})}); el.value='';
       }
       Promise.all([
         fetch('/api/events'+Q).then(r=>r.json()).then(es=>es.forEach(apply)).catch(()=>{}),
@@ -535,8 +576,8 @@ defmodule NanoAgent.Web do
       ]).then(render);
       function loadStats(){
         fetch('/api/metrics'+Q).then(r=>r.json()).then(m=>{
-          $('stats').innerHTML='<span>tok in/out <b>'+m.tokens.input+'/'+m.tokens.output+
-            '</b></span><span>dur p50/p95 <b>'+m.duration_ms.p50+'/'+m.duration_ms.p95+'ms</b></span>';
+          $('stats').innerHTML='<span>tok <b>'+m.tokens.input+'/'+m.tokens.output+
+            '</b></span><span>p50/p95 <b>'+m.duration_ms.p50+'/'+m.duration_ms.p95+'ms</b></span>';
         }).catch(()=>{});
       }
       loadStats(); setInterval(loadStats,3000);

@@ -108,9 +108,10 @@ Flags: `--plan` (single plan, skip decomposition), `--json` (NDJSON / JSON outpu
 | POST | `/runs/:id/cancel` | stop a running run |
 | POST | `/approvals/:id` | decide: `{"decision": "approve"|"deny"}` |
 
-The dashboard shows per-agent cards with live transcripts, todo checklists,
-token/status/duration, a fleet stats strip, and **approve/deny buttons** for runs
-paused on the approval gate (`:manual` mode).
+The dashboard is a full orchestration console: a **dispatch bar** to start a goal
+or plan, per-agent cards with live transcripts/todos/tokens, **cancel buttons** on
+running cards, **approve/deny buttons** for paused runs, a fleet stats strip, and
+**goal grouping** — a goal's sub-plans are shown together under their goal id.
 
 ```bash
 curl -XPOST localhost:4000/runs -d '{"plan":"echo hi"}'

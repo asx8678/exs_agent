@@ -56,6 +56,7 @@ defmodule NanoAgent.Agent do
       last_text: "",
       depth: depth,
       child_sup: child_sup,
+      goal_id: Map.get(args, :goal_id),
       started_at: System.monotonic_time(:millisecond)
     }
 
@@ -64,13 +65,19 @@ defmodule NanoAgent.Agent do
 
   @impl true
   def handle_continue(:work, state) do
-    Events.publish(state.ref, :started, %{plan: state.plan, run_id: state.run_id})
+    Events.publish(state.ref, :started, %{
+      plan: state.plan,
+      run_id: state.run_id,
+      goal_id: state.goal_id
+    })
+
     result = run_loop(state)
     Store.finish(state.run_id, result)
     duration = System.monotonic_time(:millisecond) - state.started_at
 
     Events.publish(state.ref, result.status, %{
       run_id: state.run_id,
+      goal_id: state.goal_id,
       summary: result.summary,
       duration_ms: duration,
       tool_calls: result.tool_calls,

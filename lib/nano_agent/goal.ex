@@ -15,24 +15,35 @@ defmodule NanoAgent.Goal do
 
   @spec run(String.t(), keyword()) :: {:ok, GoalReport.t()} | {:error, term()}
   def run(goal, opts \\ []) do
+    goal_id = opts[:goal_id] || gen_goal_id()
+
     case Planner.decompose(goal) do
       {:ok, plans, planner_tokens} ->
         Logger.info("planned #{length(plans)} sub-plan(s) for goal")
-        Events.publish(:goal, :planned, %{count: length(plans)})
-        {:ok, schedule(goal, plans, planner_tokens, opts)}
+
+        Events.publish(:goal, :planned, %{
+          goal_id: goal_id,
+          goal: goal,
+          plans:
+            Enum.map(plans, &%{id: &1.id, description: &1.description, depends_on: &1.depends_on})
+        })
+
+        {:ok, schedule(goal, plans, planner_tokens, opts, goal_id)}
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
+  defp gen_goal_id, do: :crypto.strong_rand_bytes(6) |> Base.encode16(case: :lower)
+
   # ---- scheduler ----
 
-  defp schedule(goal, plans, planner_tokens, opts) do
+  defp schedule(goal, plans, planner_tokens, opts, goal_id) do
     cap = opts[:max_concurrency] || Application.get_env(:nano_agent, :max_concurrency, 5)
     timeout = opts[:agent_timeout] || @agent_timeout
 
-    state = %{pending: plans, running: %{}, succeeded: %{}, outcomes: []}
+    state = %{pending: plans, running: %{}, succeeded: %{}, outcomes: [], goal_id: goal_id}
     build_report(goal, drive(state, cap, timeout).outcomes, planner_tokens)
   end
 
@@ -64,9 +75,11 @@ defmodule NanoAgent.Goal do
           state
 
         {plan, rest} ->
+          goal_id = state.goal_id
+
           task =
             Task.Supervisor.async_nolink(NanoAgent.TaskSupervisor, fn ->
-              {plan, run_plan(plan, context_for(plan, state.succeeded), timeout)}
+              {plan, run_plan(plan, context_for(plan, state.succeeded), timeout, goal_id)}
             end)
 
           %{state | pending: rest, running: Map.put(state.running, task.ref, plan)}
@@ -139,21 +152,29 @@ defmodule NanoAgent.Goal do
 
   # ---- running one plan (with a single retry on error) ----
 
-  defp run_plan(plan, context, timeout, attempt \\ 0) do
-    result = run_agent(plan, context, timeout)
+  defp run_plan(plan, context, timeout, goal_id, attempt \\ 0) do
+    result = run_agent(plan, context, timeout, goal_id)
 
     if result.status == :error and attempt < 1 do
       Logger.info("retrying plan #{plan.id} after error")
-      run_plan(plan, context, timeout, attempt + 1)
+      run_plan(plan, context, timeout, goal_id, attempt + 1)
     else
       result
     end
   end
 
-  defp run_agent(plan, context, timeout) do
+  defp run_agent(plan, context, timeout, goal_id) do
     ref = make_ref()
 
-    spec = {Agent, %{ref: ref, plan: plan.description, orchestrator: self(), context: context}}
+    spec =
+      {Agent,
+       %{
+         ref: ref,
+         plan: plan.description,
+         orchestrator: self(),
+         context: context,
+         goal_id: goal_id
+       }}
 
     case DynamicSupervisor.start_child(NanoAgent.AgentSupervisor, spec) do
       {:ok, pid} -> await_agent(pid, timeout)
