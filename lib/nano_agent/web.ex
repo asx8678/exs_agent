@@ -480,6 +480,10 @@ defmodule NanoAgent.Web do
       .ghead{padding:7px 12px;background:#161b26;color:#cba6f7;font-weight:600;border-bottom:1px solid #2a2f3a;display:flex;gap:10px;align-items:center}
       .ghead .gmeta{margin-left:auto;color:var(--dim);font-weight:400;font-size:11px}
       .ggrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px;padding:10px}
+      .ghead button{font-size:11px;padding:1px 8px}
+      .gdag{padding:5px 12px;border-bottom:1px solid #2a2f3a;display:flex;flex-wrap:wrap;gap:6px}
+      .pnode{background:#1f2430;border-radius:4px;padding:1px 7px;color:#cdd6f4;font-size:11px}
+      .pnode .dep{color:#6c7086;margin-left:3px}
     </style></head><body>
     <header>
       <b><span class="dot">●</span> nano_agent</b>
@@ -496,7 +500,7 @@ defmodule NanoAgent.Web do
     <div id="grid"></div>
     <script>
       const Q=#{q_js};
-      const runs={}, approvals={};
+      const runs={}, approvals={}, goalMeta={};
       const $=id=>document.getElementById(id);
       const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
       const shortRef=r=>String(r).replace('#Reference','').replace(/[<>]/g,'').slice(0,14);
@@ -509,7 +513,7 @@ defmodule NanoAgent.Web do
         const p=e.payload||{};
         if(e.type=='approval_requested'){approvals[p.id]={id:p.id,name:p.name,input:p.input};return;}
         if(e.type=='approval_resolved'){delete approvals[p.id];return;}
-        if(e.type=='planned') return;
+        if(e.type=='planned'){if(p.goal_id)goalMeta[p.goal_id]={goal:p.goal,plans:p.plans||[]};return;}
         const r=getRun(e.ref); r.at=e.at||r.at;
         if(e.type=='started'){r.status='running'; r.plan=p.plan||''; r.run_id=p.run_id||r.run_id; r.goal_id=p.goal_id||r.goal_id;}
         else if(e.type=='todos'){r.todos=p.items;}
@@ -549,11 +553,23 @@ defmodule NanoAgent.Web do
         const goals={}, loose=[];
         all.forEach(r=>{ if(r.goal_id){(goals[r.goal_id]=goals[r.goal_id]||[]).push(r);} else loose.push(r); });
         let html='';
+        const failed=t=>['error','cancelled','max_iterations','budget'].includes(t);
         Object.keys(goals).forEach(gid=>{
-          const m=goals[gid], ok=m.filter(x=>x.status=='ok').length, run=m.filter(x=>x.status=='running').length;
+          const m=goals[gid];
+          const ok=m.filter(x=>x.status=='ok').length;
+          const run=m.filter(x=>x.status=='running').length;
+          const fail=m.filter(x=>failed(x.status)).length;
+          const gstat=run>0?'running':(fail>0?'has failures':'done');
+          const meta=goalMeta[gid];
+          // decomposition + dependency view (a ←b means a depends on b)
+          const dag=(meta&&meta.plans.length)?'<div class="gdag">'+meta.plans.map(p=>
+            '<span class="pnode" title="'+esc(p.description||'')+'">'+esc(p.id)+
+            (p.depends_on&&p.depends_on.length?'<span class="dep">←'+esc(p.depends_on.join(','))+'</span>':'')+
+            '</span>').join('')+'</div>':'';
+          const cancelG=run>0?'<button class="no-btn" onclick="cancelGoal(\\''+gid+'\\')">cancel goal</button>':'';
           html+='<div class="goal"><div class="ghead">▤ goal '+gid.slice(0,8)+
-            '<span class="gmeta">'+m.length+' plans · '+ok+' ok · '+run+' running</span></div>'+
-            '<div class="ggrid">'+m.map(card).join('')+'</div></div>';
+            '<span class="gmeta">'+m.length+' plans · '+ok+' ok'+(fail?' · '+fail+' failed':'')+' · '+gstat+'</span>'+
+            cancelG+'</div>'+dag+'<div class="ggrid">'+m.map(card).join('')+'</div></div>';
         });
         if(loose.length) html+='<div class="ggrid">'+loose.map(card).join('')+'</div>';
         $('grid').innerHTML=html;
@@ -564,6 +580,9 @@ defmodule NanoAgent.Web do
       }
       function cancelRun(id){
         fetch('/runs/'+id+'/cancel'+Q,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+      }
+      function cancelGoal(gid){
+        Object.values(runs).filter(r=>r.goal_id==gid&&r.status=='running'&&r.run_id).forEach(r=>cancelRun(r.run_id));
       }
       function dispatch(kind){
         const el=$('cmd'), v=el.value.trim(); if(!v) return;

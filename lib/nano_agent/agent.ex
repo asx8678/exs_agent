@@ -261,14 +261,16 @@ defmodule NanoAgent.Agent do
         {"error: subagent supervisor unavailable", zero_tokens()}
 
       true ->
-        r = run_child(plan, state.depth + 1, state.child_sup)
+        r = run_child(plan, state.depth + 1, state.child_sup, state.goal_id)
         {"[subagent #{r.status}] #{r.summary}", r.tokens}
     end
   end
 
-  defp run_child(plan, depth, sup) do
+  defp run_child(plan, depth, sup, goal_id) do
     ref = make_ref()
-    spec = {__MODULE__, %{ref: ref, plan: plan, orchestrator: self(), depth: depth}}
+    # Inherit the goal_id so subagents group under the same goal on the dashboard.
+    spec =
+      {__MODULE__, %{ref: ref, plan: plan, orchestrator: self(), depth: depth, goal_id: goal_id}}
 
     timeout = Application.get_env(:nano_agent, :agent_timeout_ms, 180_000)
 

@@ -75,6 +75,28 @@ defmodule NanoAgent.OrchestrationTest do
     assert html =~ "Run goal"
     assert html =~ "function dispatch"
     assert html =~ "function cancelRun"
+    assert html =~ "function cancelGoal"
+    assert html =~ "goalMeta"
+    assert html =~ "gdag"
     assert html =~ "goal "
+  end
+
+  test "a goal with a dependent plan: the dependent's agent carries the goal_id too" do
+    Events.subscribe(:all)
+
+    Application.put_env(
+      :nano_agent,
+      :mock,
+      planner_then_agents([
+        %{"id" => "a", "description" => "do a", "depends_on" => []},
+        %{"id" => "b", "description" => "do b after a", "depends_on" => ["a"]}
+      ])
+    )
+
+    {:ok, _} = NanoAgent.run_goal("pipeline", goal_id: "GP")
+
+    # both the independent and the dependent plan's agents report under the goal
+    assert_receive {:nano_event, %{type: :ok, payload: %{goal_id: "GP"}}}, 2000
+    assert_receive {:nano_event, %{type: :ok, payload: %{goal_id: "GP"}}}, 2000
   end
 end
