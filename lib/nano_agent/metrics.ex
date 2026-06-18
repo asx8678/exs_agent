@@ -15,7 +15,8 @@ defmodule NanoAgent.Metrics do
 
     tokens =
       Enum.reduce(runs, %{input: 0, output: 0}, fn r, acc ->
-        %{input: acc.input + r.tokens.input, output: acc.output + r.tokens.output}
+        t = r.tokens || %{}
+        %{input: acc.input + Map.get(t, :input, 0), output: acc.output + Map.get(t, :output, 0)}
       end)
 
     %{

@@ -28,7 +28,7 @@ defmodule NanoAgent.Export do
     # Run #{rec.id}
 
     - **status:** #{rec.status}
-    - **tokens:** in #{rec.tokens.input} / out #{rec.tokens.output}
+    - **tokens:** in #{tok(rec, :input)} / out #{tok(rec, :output)}
     - **tool calls:** #{rec.tool_calls} · **iterations:** #{rec.iterations}
 
     ## Plan
@@ -44,6 +44,8 @@ defmodule NanoAgent.Export do
     #{rec.summary}
     """
   end
+
+  defp tok(rec, key), do: Map.get(rec.tokens || %{}, key, 0)
 
   defp todos_md(nil), do: ""
   defp todos_md([]), do: ""

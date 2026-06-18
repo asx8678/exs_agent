@@ -24,7 +24,8 @@ defmodule NanoAgent.Provider.OpenAI do
 
     payload = %{
       model: model,
-      max_tokens: opts[:max_tokens] || @max_tokens,
+      # newer OpenAI models reject `max_tokens`; `max_completion_tokens` is current
+      max_completion_tokens: opts[:max_tokens] || @max_tokens,
       messages: msgs,
       tools: to_openai_tools(tools),
       tool_choice: "auto"
@@ -83,8 +84,14 @@ defmodule NanoAgent.Provider.OpenAI do
         }
       end)
 
-    msg = %{role: "assistant", content: (text == "" && nil) || text}
-    [if(tool_calls == [], do: msg, else: Map.put(msg, :tool_calls, tool_calls))]
+    # OpenAI allows content:null ONLY when tool_calls are present; otherwise it must
+    # be a string. Use "" rather than nil for a contentless, tool-less assistant turn.
+    if tool_calls == [] do
+      [%{role: "assistant", content: text}]
+    else
+      content = if text == "", do: nil, else: text
+      [%{role: "assistant", content: content, tool_calls: tool_calls}]
+    end
   end
 
   defp translate_message(other), do: [other]

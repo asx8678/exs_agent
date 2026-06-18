@@ -52,13 +52,22 @@ defmodule NanoAgent.Web do
       {:ok, sock} ->
         # Transfer ownership BEFORE the handler touches the socket, otherwise it
         # may recv / go active before it owns the socket (races on SSE delivery).
-        pid = spawn(fn -> receive do: (:go -> handle(sock)) end)
+        pid =
+          spawn(fn ->
+            receive do: (:go -> handle(sock)), after: (5_000 -> :gen_tcp.close(sock))
+          end)
+
         :gen_tcp.controlling_process(sock, pid)
         send(pid, :go)
         accept_loop(lsock)
 
       {:error, :closed} ->
         :ok
+
+      {:error, _transient} ->
+        # e.g. :emfile under fd pressure — keep the acceptor alive rather than
+        # crashing the Web GenServer (it's spawn_linked to us).
+        accept_loop(lsock)
     end
   end
 
@@ -78,11 +87,16 @@ defmodule NanoAgent.Web do
     end
   end
 
+  @max_headers 100
+
   # packet: :http_bin makes gen_tcp parse the request line + headers for us.
-  defp read_request(sock, acc \\ %{method: nil, path: nil, clen: 0}) do
+  defp read_request(sock, acc \\ %{method: nil, path: nil, clen: 0, hn: 0}) do
     case :gen_tcp.recv(sock, 0, 10_000) do
       {:ok, {:http_request, method, {:abs_path, p}, _v}} ->
         read_request(sock, %{acc | method: method, path: p})
+
+      {:ok, {:http_header, _, _name, _, _value}} when acc.hn >= @max_headers ->
+        {:error, :too_many_headers}
 
       {:ok, {:http_header, _, name, _, value}} ->
         acc =
@@ -90,7 +104,7 @@ defmodule NanoAgent.Web do
             do: %{acc | clen: parse_int(value)},
             else: acc
 
-        read_request(sock, acc)
+        read_request(sock, %{acc | hn: acc.hn + 1})
 
       {:ok, :http_eoh} ->
         {:ok, acc.method, acc.path, acc.clen}
@@ -340,7 +354,7 @@ defmodule NanoAgent.Web do
 
   defp parse_int(v) do
     case Integer.parse(to_string(v)) do
-      {n, _} -> n
+      {n, _} -> max(n, 0)
       :error -> 0
     end
   end

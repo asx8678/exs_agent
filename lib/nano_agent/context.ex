@@ -26,10 +26,19 @@ defmodule NanoAgent.Context do
   end
 
   defp do_compact([first | rest], keep) do
-    kept_tail = Enum.take(rest, -keep)
-    dropped = Enum.take(rest, max(length(rest) - keep, 0))
+    kept_tail = rest |> Enum.take(-keep) |> drop_leading_tool_results()
+    dropped = Enum.take(rest, max(length(rest) - length(kept_tail), 0))
     [first, %{role: "user", content: summarize(dropped)} | kept_tail]
   end
+
+  # Defensive: a kept window must never begin with a tool_result whose assistant
+  # tool_use was dropped (the API rejects an orphan tool_result).
+  defp drop_leading_tool_results([
+         %{role: "user", content: [%{"type" => "tool_result"} | _]} | rest
+       ]),
+       do: drop_leading_tool_results(rest)
+
+  defp drop_leading_tool_results(msgs), do: msgs
 
   defp summarize(dropped) do
     tools =

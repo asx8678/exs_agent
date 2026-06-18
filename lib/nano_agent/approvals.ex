@@ -49,9 +49,11 @@ defmodule NanoAgent.Approvals do
 
       :manual ->
         # Default to deny if no human acts within the timeout — never hang the agent.
+        # Monitor the requester so a cancelled/dead agent drops its pending entry.
         ms = Application.get_env(:nano_agent, :approval_timeout_ms, 300_000)
         timer = Process.send_after(self(), {:timeout, id}, ms)
-        entry = {from, timer, %{name: meta[:name], input: meta[:input]}}
+        mref = Process.monitor(elem(from, 0))
+        entry = {from, timer, mref, %{name: meta[:name], input: meta[:input]}}
         {:noreply, put_in(state.pending[id], entry)}
     end
   end
@@ -60,7 +62,7 @@ defmodule NanoAgent.Approvals do
 
   def handle_call(:pending_details, _from, state) do
     details =
-      Enum.map(state.pending, fn {id, {_from, _timer, meta}} -> Map.put(meta, :id, id) end)
+      Enum.map(state.pending, fn {id, {_from, _timer, _mref, meta}} -> Map.put(meta, :id, id) end)
 
     {:reply, details, state}
   end
@@ -71,13 +73,26 @@ defmodule NanoAgent.Approvals do
   @impl true
   def handle_info({:timeout, id}, state), do: resolve(state, id, :denied)
 
+  # Requesting agent died (cancelled/crashed) before a decision — drop its entry.
+  def handle_info({:DOWN, mref, :process, _pid, _reason}, state) do
+    case Enum.find(state.pending, fn {_id, {_f, _t, m, _meta}} -> m == mref end) do
+      {id, {_from, timer, _mref, _meta}} ->
+        Process.cancel_timer(timer)
+        {:noreply, %{state | pending: Map.delete(state.pending, id)}}
+
+      nil ->
+        {:noreply, state}
+    end
+  end
+
   defp resolve(state, id, decision) do
     case Map.pop(state.pending, id) do
       {nil, _} ->
         {:noreply, state}
 
-      {{from, timer, _meta}, pending} ->
+      {{from, timer, mref, _meta}, pending} ->
         Process.cancel_timer(timer)
+        Process.demonitor(mref, [:flush])
         GenServer.reply(from, decision)
         NanoAgent.Events.publish(:approvals, :approval_resolved, %{id: id, decision: decision})
         {:noreply, %{state | pending: pending}}

@@ -95,10 +95,13 @@ defmodule NanoAgent.Goal do
         record(state, ref, plan, %Result{status: :error, summary: "task crashed", error: reason})
     after
       timeout + 60_000 ->
-        # Safety net: a task ignored its own timeout. Drop every in-flight task as
-        # an error and clear `running` so the scheduler can't loop forever.
+        # Safety net: a task ignored its own timeout. Demonitor + drop every
+        # in-flight task as an error and clear `running` so the scheduler can't
+        # loop forever and abandoned DOWNs don't pile up in the mailbox.
         extra =
-          Enum.map(state.running, fn {_ref, plan} ->
+          Enum.map(state.running, fn {ref, plan} ->
+            Process.demonitor(ref, [:flush])
+
             %{
               plan: plan,
               result: %Result{status: :error, summary: "scheduler timeout", error: :timeout}

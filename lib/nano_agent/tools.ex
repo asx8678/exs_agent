@@ -239,6 +239,8 @@ defmodule NanoAgent.Tools do
       {:ok, _} ->
         pattern
         |> Path.wildcard()
+        # re-check EACH match against the sandbox — Path.wildcard ignores the root
+        |> Enum.filter(&match?({:ok, _}, Safety.resolve(&1)))
         |> Enum.take(500)
         |> Enum.join("\n")
         |> blank_as("(no matches)")
