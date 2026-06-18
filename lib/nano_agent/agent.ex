@@ -101,11 +101,14 @@ defmodule NanoAgent.Agent do
                [%{role: "assistant", content: content}, %{role: "user", content: results}])
             |> Context.compact()
 
+          # todo_write is progress bookkeeping, not real work — don't count it.
+          real = Enum.count(tool_uses, &(&1["name"] != "todo_write"))
+
           state = %{
             state
             | messages: messages,
               iterations: state.iterations + 1,
-              tool_calls: state.tool_calls + length(tool_uses)
+              tool_calls: state.tool_calls + real
           }
 
           checkpoint(state)
@@ -126,6 +129,7 @@ defmodule NanoAgent.Agent do
     output =
       cond do
         name == "spawn_agent" -> spawn_child_tool(input, state)
+        name == "todo_write" -> handle_todo(input, state)
         true -> guarded(ref, name, input)
       end
 
@@ -140,9 +144,47 @@ defmodule NanoAgent.Agent do
     end
   end
 
+  # ---- todo (progress tracking) ----
+
+  defp todo_spec do
+    %{
+      name: "todo_write",
+      description:
+        "Record/update your task checklist for this run. Call it at the start of a " <>
+          "multi-step plan and whenever a step's status changes. Keeps you coherent " <>
+          "and shows progress on the dashboard.",
+      input_schema: %{
+        type: "object",
+        properties: %{
+          items: %{
+            type: "array",
+            items: %{
+              type: "object",
+              properties: %{
+                content: %{type: "string"},
+                status: %{type: "string", enum: ["pending", "in_progress", "completed"]}
+              },
+              required: ["content", "status"]
+            }
+          }
+        },
+        required: ["items"]
+      }
+    }
+  end
+
+  defp handle_todo(%{"items" => items}, state) when is_list(items) do
+    Events.publish(state.ref, :todos, %{items: items})
+    Store.checkpoint(state.run_id, %{todos: items})
+    done = Enum.count(items, &(&1["status"] == "completed"))
+    "todos updated: #{done}/#{length(items)} completed"
+  end
+
+  defp handle_todo(_input, _state), do: "error: todo_write requires an items array"
+
   # ---- subagents ----
 
-  defp tool_specs(state), do: Tools.specs() ++ subagent_specs(state.depth)
+  defp tool_specs(state), do: Tools.specs() ++ [todo_spec()] ++ subagent_specs(state.depth)
 
   defp subagent_specs(depth) do
     if Application.get_env(:nano_agent, :subagents_enabled, false) and depth < max_depth() do

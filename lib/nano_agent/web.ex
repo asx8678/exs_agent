@@ -340,6 +340,8 @@ defmodule NanoAgent.Web do
       .tx div{padding:2px 0;border-bottom:1px dashed #1a1f29}
       .tx .call{color:#f9e2af}.tx .res{color:#94e2d5}.tx .txt{color:#cdd6f4}
       .tx code{color:#fff}
+      .todos{padding:6px 10px;border-bottom:1px solid var(--line)}
+      .td{color:#9399b2}.td.completed{color:#a6e3a1}.td.in_progress{color:#f9e2af;font-weight:600}
     </style></head><body>
     <header>
       <b><span class="dot">●</span> nano_agent fleet</b>
@@ -354,7 +356,7 @@ defmodule NanoAgent.Web do
       const shortRef=r=>String(r).replace('#Reference','').replace(/[<>]/g,'').slice(0,14);
 
       function getRun(ref){
-        if(!runs[ref]) runs[ref]={ref,status:'running',plan:'',tokens:null,tools:0,dur:null,tx:[],at:0};
+        if(!runs[ref]) runs[ref]={ref,status:'running',plan:'',tokens:null,tools:0,dur:null,tx:[],todos:null,at:0};
         return runs[ref];
       }
       function apply(e){
@@ -364,7 +366,8 @@ defmodule NanoAgent.Web do
         if(e.type=='planned') return;
         const r=getRun(e.ref); r.at=e.at||r.at;
         if(e.type=='started'){r.status='running'; r.plan=p.plan||p.run_id||'';}
-        else if(e.type=='tool_call'){r.tools++; r.tx.push({k:'call',t:p.name+' '+JSON.stringify(p.input||{})});}
+        else if(e.type=='todos'){r.todos=p.items;}
+        else if(e.type=='tool_call'){if(p.name!='todo_write')r.tools++; r.tx.push({k:'call',t:p.name+' '+JSON.stringify(p.input||{})});}
         else if(e.type=='tool_result'){r.tx.push({k:'res',t:(p.name||'')+' → '+(p.output_preview||'')});}
         else if(['ok','error','max_iterations','budget'].includes(e.type)){
           r.status=e.type; r.tokens=p.tokens; r.tools=p.tool_calls!=null?p.tool_calls:r.tools; r.dur=p.duration_ms;
@@ -391,9 +394,12 @@ defmodule NanoAgent.Web do
           const meta=[r.tools+' tools', r.tokens?(r.tokens.output+' out tok'):'', r.dur?(r.dur+'ms'):'']
             .filter(Boolean).join(' · ');
           const tx=r.tx.slice(-40).map(x=>'<div class="'+(x.k=='call'?'call':x.k=='res'?'res':'txt')+'">'+esc(x.t)+'</div>').join('');
+          const mark={completed:'✓',in_progress:'▸',pending:'☐'};
+          const todos=r.todos?'<div class="todos">'+r.todos.map(t=>
+            '<div class="td '+(t.status||'pending')+'">'+(mark[t.status]||'☐')+' '+esc(t.content)+'</div>').join('')+'</div>':'';
           return '<div class="card '+r.status+'"><h4><span class="badge">'+r.status+'</span>'+
             '<span class="ref">'+shortRef(r.ref)+'</span><span class="meta">'+meta+'</span></h4>'+
-            (r.plan?'<div class="plan">'+esc(r.plan)+'</div>':'')+'<div class="tx">'+tx+'</div></div>';
+            (r.plan?'<div class="plan">'+esc(r.plan)+'</div>':'')+todos+'<div class="tx">'+tx+'</div></div>';
         }).join('');
       }
       function decide(id,decision){
