@@ -18,17 +18,38 @@ NanoAgent.run_goal("add a /health endpoint and a test for it")
 ```
 NanoAgent.Supervisor
 ├── Events            Registry-based pub/sub (zero-dep)
+├── AgentRegistry     run_id -> agent pid (for cancellation)
 ├── Tracker           in-memory rollup for the dashboard
 ├── Store             durable run history (DETS) + crash-resume
 ├── Approvals         human-in-the-loop gate for flagged tools
-├── AgentSupervisor   DynamicSupervisor — one ephemeral Agent per plan
+├── AgentSupervisor   DynamicSupervisor — one ephemeral Agent per plan (globally capped)
 ├── TaskSupervisor    bounded fan-out for goal scheduling
 ├── Orchestrator      single-plan dispatch + monitoring
 └── Web               live dashboard + JSON API (gen_tcp HTTP/SSE)
 
+Supporting modules: Planner, Goal, Context (history compaction), Provider.* ,
+Safety (sandbox + policy), Metrics, Export, Resume.
+
 Goal flow:  Planner.decompose → Goal scheduler (deps + concurrency) → Agents → GoalReport
 Agent loop: LLM.chat → tool calls (approval-gated, sandboxed) → checkpoint → repeat → Result
 ```
+
+## Tools
+
+Agents work through a tool loop. Built-in tools:
+
+| Tool | Purpose |
+|---|---|
+| `read` / `write` | read or create/overwrite a file |
+| `edit` / `multi_edit` | exact-string edit; `multi_edit` applies several atomically |
+| `list` / `glob` / `grep` | explore the filesystem |
+| `http_fetch` | TLS-verified HTTP(S) GET |
+| `bash` | run a shell command (policy-gated) |
+| `todo_write` | maintain a per-run progress checklist (shown on the dashboard) |
+| `spawn_agent` | delegate a sub-task to a child agent (opt-in; see Reliability) |
+
+Filesystem tools route through the sandbox; destructive ops can require approval.
+Add your own by extending `NanoAgent.Tools.specs/0` and `execute/2`.
 
 ## Quick start
 
@@ -47,9 +68,11 @@ NanoAgent.run("List the files here and count them.")
 # a goal — decomposed and fanned out
 NanoAgent.run_goal("write a fizzbuzz script and run it")
 
-# inspect history / resume interrupted runs
+# inspect history / resume / cancel / export
 NanoAgent.history()
 NanoAgent.resume()
+NanoAgent.cancel(run_id)
+NanoAgent.export(run_id, :markdown)
 ```
 
 Open the live dashboard at **http://localhost:4000**.
@@ -59,12 +82,14 @@ Open the live dashboard at **http://localhost:4000**.
 ```bash
 mix escript.build                       # produces ./nano_agent (single file)
 export ANTHROPIC_API_KEY=sk-ant-...
-./nano_agent --json "add a CHANGELOG"   # NDJSON event stream + final report
+./nano_agent --json "add a CHANGELOG"   # run a goal; NDJSON event stream + report
 ./nano_agent --plan --dir ./myproj "run the tests"
+./nano_agent history [--json]           # list past runs
+./nano_agent export <run-id> [--json]   # print a run as Markdown or JSON
 ```
 
-Flags: `--plan` (single plan, skip decomposition), `--json` (NDJSON), `--dir DIR`
-(sandbox to DIR), `--model`, `--concurrency N`.
+Flags: `--plan` (single plan, skip decomposition), `--json` (NDJSON / JSON output),
+`--dir DIR` (sandbox to DIR), `--model`, `--concurrency N`.
 
 ## HTTP API
 
@@ -74,13 +99,17 @@ Flags: `--plan` (single plan, skip decomposition), `--json` (NDJSON), `--dir DIR
 | GET | `/events` | SSE event stream |
 | GET | `/api/events` | recent events (JSON) |
 | GET | `/api/runs` | run history (JSON) |
-| GET | `/runs/:id` | one run (JSON) |
 | GET | `/api/approvals` | pending approval requests (JSON) |
+| GET | `/api/metrics` | counts, tokens, duration p50/p95 (JSON) |
+| GET | `/runs/:id` | one run (JSON) |
+| GET | `/runs/:id/export.md` · `.json` | export a run transcript |
 | POST | `/runs` | start: `{"plan": "..."}` or `{"goal": "..."}` |
+| POST | `/runs/:id/cancel` | stop a running run |
 | POST | `/approvals/:id` | decide: `{"decision": "approve"|"deny"}` |
 
-The dashboard shows per-agent cards with live transcripts, token/status/duration,
-and **approve/deny buttons** for runs paused on the approval gate (`:manual` mode).
+The dashboard shows per-agent cards with live transcripts, todo checklists,
+token/status/duration, a fleet stats strip, and **approve/deny buttons** for runs
+paused on the approval gate (`:manual` mode).
 
 ```bash
 curl -XPOST localhost:4000/runs -d '{"plan":"echo hi"}'
@@ -151,7 +180,7 @@ docker run -e ANTHROPIC_API_KEY=sk-... -p 4000:4000 -v $PWD/data:/data nano_agen
 ## Test
 
 ```bash
-mix test                 # 30 tests, fully offline (mock provider)
+mix test                 # 58 tests, fully offline (mock provider)
 mix format --check-formatted
 ```
 
@@ -159,6 +188,13 @@ CI runs compile (`--warnings-as-errors`), format check, and tests on every push.
 
 ## Status
 
-All milestones M1–M7 implemented (see `PLAN.md`). The streaming provider's live
-HTTP path is exercised against the real API; everything else is covered by the
-offline test suite.
+Feature-complete and hardened: goal decomposition, pipeline scheduling, subagents,
+the full tool set, sandboxing + approval gates, persistence + crash-resume + run
+cancellation, a live dashboard (metrics, todos, approvals), multi-provider, context
+management, budgets/caps, session export, and a full CLI — all on **zero
+dependencies** with **58 passing offline tests**.
+
+**Caveat worth knowing:** the test suite uses the deterministic mock provider, so
+the real LLM HTTP / streaming / OpenAI-translation paths are structurally complete
+but not yet exercised end-to-end against a live API. Run `scripts/live_check.exs`
+with a real key to validate them.
