@@ -117,6 +117,15 @@ defmodule NanoAgent.Web do
   defp route(sock, :GET, "/api/approvals", _),
     do: respond(sock, 200, "application/json", approvals_json())
 
+  defp route(sock, :GET, "/api/metrics", _),
+    do:
+      respond(
+        sock,
+        200,
+        "application/json",
+        NanoAgent.Metrics.snapshot() |> jsonable() |> encode()
+      )
+
   defp route(sock, :GET, "/events", _), do: stream_sse(sock)
   defp route(sock, :POST, "/runs", body), do: start_run(sock, body)
 
@@ -346,6 +355,7 @@ defmodule NanoAgent.Web do
     <header>
       <b><span class="dot">●</span> nano_agent fleet</b>
       <span class="counts" id="counts"></span>
+      <span class="counts" id="stats" style="margin-left:auto"></span>
     </header>
     <div id="approvals"></div>
     <div id="grid"></div>
@@ -410,6 +420,13 @@ defmodule NanoAgent.Web do
         fetch('/api/events').then(r=>r.json()).then(es=>es.forEach(apply)).catch(()=>{}),
         fetch('/api/approvals').then(r=>r.json()).then(as=>as.forEach(a=>approvals[a.id]=a)).catch(()=>{})
       ]).then(render);
+      function loadStats(){
+        fetch('/api/metrics').then(r=>r.json()).then(m=>{
+          $('stats').innerHTML='<span>tok in/out <b>'+m.tokens.input+'/'+m.tokens.output+
+            '</b></span><span>dur p50/p95 <b>'+m.duration_ms.p50+'/'+m.duration_ms.p95+'ms</b></span>';
+        }).catch(()=>{});
+      }
+      loadStats(); setInterval(loadStats,3000);
       const src=new EventSource('/events');
       src.onmessage=ev=>{try{apply(JSON.parse(ev.data));render()}catch(e){}};
     </script></body></html>
