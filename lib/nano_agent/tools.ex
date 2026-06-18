@@ -44,6 +44,23 @@ defmodule NanoAgent.Tools do
         ["path", "old_string", "new_string"]
       ),
       tool(
+        "multi_edit",
+        "Apply several exact-string edits to one file atomically (all-or-nothing). " <>
+          "Each edit's old_string must be unique.",
+        %{
+          path: %{type: "string"},
+          edits: %{
+            type: "array",
+            items: %{
+              type: "object",
+              properties: %{old_string: %{type: "string"}, new_string: %{type: "string"}},
+              required: ["old_string", "new_string"]
+            }
+          }
+        },
+        ["path", "edits"]
+      ),
+      tool(
         "list",
         "List entries in a directory.",
         %{
@@ -67,6 +84,14 @@ defmodule NanoAgent.Tools do
           path: %{type: "string", description: "Root to search (default '.')"}
         },
         ["pattern"]
+      ),
+      tool(
+        "http_fetch",
+        "HTTP GET a URL and return the response body (text, truncated).",
+        %{
+          url: %{type: "string", description: "Absolute http(s) URL"}
+        },
+        ["url"]
       ),
       tool(
         "bash",
@@ -147,6 +172,31 @@ defmodule NanoAgent.Tools do
     end
   end
 
+  def execute("multi_edit", %{"path" => path, "edits" => edits}) when is_list(edits) do
+    with {:ok, safe} <- Safety.resolve(path),
+         {:ok, contents} <- File.read(safe),
+         {:ok, updated, n} <- apply_edits(contents, edits) do
+      case File.write(safe, updated) do
+        :ok -> "applied #{n} edit(s) to #{path}"
+        {:error, reason} -> "error writing #{path}: #{:file.format_error(reason)}"
+      end
+    else
+      {:error, :denied} -> "error: path '#{path}' is outside the allowed root"
+      {:error, {:edit, msg}} -> "error: #{msg} (no changes written)"
+      {:error, reason} -> "error editing #{path}: #{inspect(reason)}"
+    end
+  end
+
+  def execute("http_fetch", %{"url" => url}) when is_binary(url) do
+    request = {String.to_charlist(url), []}
+
+    case :httpc.request(:get, request, fetch_opts(), body_format: :binary) do
+      {:ok, {{_v, 200, _}, _h, body}} -> body
+      {:ok, {{_v, status, _}, _h, _}} -> "error: HTTP #{status}"
+      {:error, reason} -> "error fetching #{url}: #{inspect(reason)}"
+    end
+  end
+
   def execute("list", input) do
     path = Map.get(input, "path", ".")
 
@@ -223,6 +273,39 @@ defmodule NanoAgent.Tools do
 
   defp occurrences(haystack, needle) do
     haystack |> String.split(needle) |> length() |> Kernel.-(1)
+  end
+
+  # Apply edits sequentially; each old_string must occur exactly once. All-or-nothing.
+  defp apply_edits(contents, edits) do
+    Enum.reduce_while(edits, {:ok, contents, 0}, fn edit, {:ok, acc, n} ->
+      old = edit["old_string"]
+      new = edit["new_string"]
+
+      cond do
+        not is_binary(old) or not is_binary(new) ->
+          {:halt, {:error, {:edit, "each edit needs string old_string/new_string"}}}
+
+        occurrences(acc, old) == 1 ->
+          {:cont, {:ok, String.replace(acc, old, new), n + 1}}
+
+        occurrences(acc, old) == 0 ->
+          {:halt, {:error, {:edit, "old_string not found: #{String.slice(old, 0, 40)}"}}}
+
+        true ->
+          {:halt, {:error, {:edit, "old_string not unique: #{String.slice(old, 0, 40)}"}}}
+      end
+    end)
+  end
+
+  defp fetch_opts do
+    ssl_opts = [
+      verify: :verify_peer,
+      cacerts: :public_key.cacerts_get(),
+      depth: 3,
+      customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]
+    ]
+
+    [ssl: ssl_opts, timeout: 15_000, connect_timeout: 10_000]
   end
 
   defp compile_regex(pattern) do
