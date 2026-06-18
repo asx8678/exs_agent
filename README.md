@@ -183,7 +183,8 @@ App env (see `config/`), overridable at release runtime via env vars
 MIX_ENV=prod mix release          # self-contained OTP release in _build/prod/rel
 # or
 docker build -t nano_agent .
-docker run -e ANTHROPIC_API_KEY=sk-... -p 4000:4000 -v $PWD/data:/data nano_agent
+docker run -e DEEPSEEK_API_KEY=sk-... -e NANO_WEB_TOKEN=secret \
+  -p 127.0.0.1:4000:4000 -v $PWD/data:/data nano_agent
 ```
 
 ## Test

@@ -20,9 +20,14 @@ WORKDIR /app
 COPY --from=build /app/_build/prod/rel/nano_agent ./
 
 ENV NANO_DATA_DIR=/data
+# Bind to all interfaces INSIDE the container so `-p` port mapping works (the app
+# defaults to loopback otherwise). Because this exposes an API that can run bash,
+# set NANO_WEB_TOKEN and/or map the port to host loopback:
+#   docker run -e NANO_WEB_TOKEN=secret -p 127.0.0.1:4000:4000 ...
+ENV NANO_WEB_BIND=0.0.0.0
 VOLUME /data
 EXPOSE 4000
 
-# Provide ANTHROPIC_API_KEY (or OPENAI_API_KEY) at run time.
+# Provide DEEPSEEK_API_KEY (or ANTHROPIC_API_KEY / OPENAI_API_KEY) at run time.
 ENTRYPOINT ["/app/bin/nano_agent"]
 CMD ["start"]
