@@ -129,10 +129,29 @@ defmodule NanoAgent.Web do
   defp route(sock, :GET, "/events", _), do: stream_sse(sock)
   defp route(sock, :POST, "/runs", body), do: start_run(sock, body)
 
-  defp route(sock, :GET, "/runs/" <> id, _) when id != "", do: run_detail(sock, id)
+  defp route(sock, :GET, "/runs/" <> rest, _) when rest != "", do: run_route(sock, rest)
   defp route(sock, :POST, "/approvals/" <> id, body) when id != "", do: decide(sock, id, body)
 
   defp route(sock, _method, _path, _body), do: respond(sock, 404, "text/plain", "not found")
+
+  defp run_route(sock, rest) do
+    case String.split(rest, "/") do
+      [id] -> run_detail(sock, id)
+      [id, "export.md"] -> export(sock, id, :markdown, "text/markdown; charset=utf-8")
+      [id, "export.json"] -> export(sock, id, :json, "application/json")
+      _ -> respond(sock, 404, "text/plain", "not found")
+    end
+  end
+
+  defp export(sock, id, format, ctype) do
+    result =
+      if format == :json, do: NanoAgent.Export.json(id), else: NanoAgent.Export.markdown(id)
+
+    case result do
+      {:ok, body} -> respond(sock, 200, ctype, body)
+      {:error, :not_found} -> respond(sock, 404, "text/plain", "not found")
+    end
+  end
 
   defp decide(sock, id, body) do
     case safe_decode(body) do

@@ -43,6 +43,11 @@ defmodule NanoAgent do
   @doc "Fetch a single persisted run by id."
   def run_info(run_id), do: NanoAgent.Store.get(run_id)
 
+  @doc "Export a run as `:markdown` (default) or `:json`. Returns `{:ok, string}`."
+  def export(run_id, format \\ :markdown)
+  def export(run_id, :json), do: NanoAgent.Export.json(run_id)
+  def export(run_id, _md), do: NanoAgent.Export.markdown(run_id)
+
   @doc "Re-run any interrupted (`:running`) runs from their saved state."
   def resume, do: NanoAgent.Resume.resume_all()
 
