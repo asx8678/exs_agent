@@ -3,7 +3,8 @@ import Config
 config :logger, level: :info
 
 # Default LLM provider. Override with NanoAgent.Provider.Mock in tests/offline.
-config :nano_agent, provider: NanoAgent.Provider.Anthropic
+# DeepSeek is OpenAI-compatible; set DEEPSEEK_API_KEY and (optionally) DEEPSEEK_MODEL.
+config :nano_agent, provider: NanoAgent.Provider.DeepSeek
 
 # Sandbox (M6). Permissive until enforce: true with a root is set.
 config :nano_agent, sandbox: []

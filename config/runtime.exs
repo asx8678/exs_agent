@@ -16,6 +16,7 @@ if dir = System.get_env("NANO_DATA_DIR") do
 end
 
 case System.get_env("NANO_PROVIDER") do
+  "deepseek" -> config :nano_agent, provider: NanoAgent.Provider.DeepSeek
   "openai" -> config :nano_agent, provider: NanoAgent.Provider.OpenAI
   "anthropic-stream" -> config :nano_agent, provider: NanoAgent.Provider.AnthropicStream
   "anthropic" -> config :nano_agent, provider: NanoAgent.Provider.Anthropic

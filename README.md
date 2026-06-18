@@ -57,7 +57,8 @@ Needs Elixir/OTP 27+. No `mix deps.get` (zero deps).
 
 ```bash
 cd nano_agent
-export ANTHROPIC_API_KEY=sk-ant-...
+export DEEPSEEK_API_KEY=sk-...          # default provider; or ANTHROPIC_API_KEY / OPENAI_API_KEY
+# optional: export DEEPSEEK_MODEL=deepseek-v4-pro
 iex -S mix
 ```
 
@@ -121,9 +122,11 @@ curl -XPOST localhost:4000/runs -d '{"plan":"echo hi"}'
 Pluggable via the `NanoAgent.Provider` behaviour. Select with
 `config :nano_agent, provider: ...` or `NANO_PROVIDER`:
 
-- `NanoAgent.Provider.Anthropic` (default) — Messages API, non-streaming
+- `NanoAgent.Provider.DeepSeek` **(default)** — official DeepSeek API (OpenAI-compatible).
+  Auth `DEEPSEEK_API_KEY`; model `DEEPSEEK_MODEL` (default `deepseek-v4-pro`).
+- `NanoAgent.Provider.Anthropic` — Messages API, non-streaming (`ANTHROPIC_API_KEY`)
 - `NanoAgent.Provider.AnthropicStream` — SSE streaming (live token deltas)
-- `NanoAgent.Provider.OpenAI` — Chat Completions (translates wire format)
+- `NanoAgent.Provider.OpenAI` — Chat Completions (`OPENAI_API_KEY`)
 - `NanoAgent.Provider.Mock` — deterministic, for tests/offline
 
 ## Safety
