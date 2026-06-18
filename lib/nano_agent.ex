@@ -55,7 +55,13 @@ defmodule NanoAgent do
   def cancel(run_id) do
     case Registry.lookup(NanoAgent.AgentRegistry, run_id) do
       [{pid, _} | _] ->
-        DynamicSupervisor.terminate_child(NanoAgent.AgentSupervisor, pid)
+        # Top-level agents live under AgentSupervisor; subagents under a per-agent
+        # supervisor. Fall back to a direct shutdown for the latter.
+        case DynamicSupervisor.terminate_child(NanoAgent.AgentSupervisor, pid) do
+          :ok -> :ok
+          {:error, :not_found} -> Process.exit(pid, :shutdown)
+        end
+
         NanoAgent.Store.cancel(run_id)
         :ok
 

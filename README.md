@@ -157,9 +157,10 @@ config :nano_agent,
 ```
 
 With `subagents_enabled: true`, an agent gets a `spawn_agent` tool: it delegates a
-self-contained sub-task to a fresh supervised child agent (its own run, transcript,
-and dashboard card), blocks on the result, and continues — bounded by depth and the
-global `max_agents` cap.
+self-contained sub-task to a fresh child agent (its own run, transcript, and
+dashboard card), blocks on the result, and continues — bounded by depth. Each agent
+runs its children under its own supervisor linked to itself, so terminating a parent
+(cancel/timeout/crash) reaps the entire subtree recursively.
 
 The goal scheduler is a greedy pipeline: each plan starts the instant its
 dependencies clear, not at a wave boundary. Filesystem tools resolve symlinks

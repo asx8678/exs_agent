@@ -28,9 +28,21 @@ defmodule NanoAgent.Agent do
     resuming? = Map.has_key?(args, :messages)
     messages = Map.get(args, :messages) || [%{role: "user", content: build_prompt(plan, context)}]
 
+    depth = Map.get(args, :depth, 0)
+
     unless resuming?, do: Store.register(run_id, plan)
     # Register so the run can be cancelled by id (auto-removed when this dies).
     Registry.register(NanoAgent.AgentRegistry, run_id, nil)
+
+    # If this agent may spawn subagents, give it its own DynamicSupervisor *linked*
+    # to itself. When this agent dies (cancel/timeout/crash), the linked supervisor
+    # dies too and reaps the whole subtree — recursively, since each child does the
+    # same. This is what makes parent termination cascade to descendants.
+    child_sup =
+      if Application.get_env(:nano_agent, :subagents_enabled, false) and depth < max_depth() do
+        {:ok, sup} = DynamicSupervisor.start_link(strategy: :one_for_one)
+        sup
+      end
 
     state = %{
       ref: ref,
@@ -42,7 +54,8 @@ defmodule NanoAgent.Agent do
       tool_calls: Map.get(args, :tool_calls, 0),
       tokens: Map.get(args, :tokens, %{input: 0, output: 0}),
       last_text: "",
-      depth: Map.get(args, :depth, 0),
+      depth: depth,
+      child_sup: child_sup,
       started_at: System.monotonic_time(:millisecond)
     }
 
@@ -63,6 +76,10 @@ defmodule NanoAgent.Agent do
       tool_calls: result.tool_calls,
       tokens: result.tokens
     })
+
+    # Normal exit doesn't propagate through the link, so stop the (now child-less)
+    # supervisor explicitly. Abnormal death reaps it automatically.
+    if state.child_sup, do: DynamicSupervisor.stop(state.child_sup)
 
     send(state.orchestrator, {:agent_done, self(), result})
     {:stop, :normal, state}
@@ -233,25 +250,29 @@ defmodule NanoAgent.Agent do
       plan == "" ->
         {"error: spawn_agent requires a non-empty plan", zero_tokens()}
 
+      is_nil(state.child_sup) ->
+        {"error: subagent supervisor unavailable", zero_tokens()}
+
       true ->
-        r = run_child(plan, state.depth + 1)
+        r = run_child(plan, state.depth + 1, state.child_sup)
         {"[subagent #{r.status}] #{r.summary}", r.tokens}
     end
   end
 
-  defp run_child(plan, depth) do
+  defp run_child(plan, depth, sup) do
     ref = make_ref()
     spec = {__MODULE__, %{ref: ref, plan: plan, orchestrator: self(), depth: depth}}
 
     timeout = Application.get_env(:nano_agent, :agent_timeout_ms, 180_000)
 
-    case DynamicSupervisor.start_child(NanoAgent.AgentSupervisor, spec) do
-      {:ok, pid} -> await_child(pid, timeout)
+    # Under THIS agent's own supervisor, so the child is reaped if this agent dies.
+    case DynamicSupervisor.start_child(sup, spec) do
+      {:ok, pid} -> await_child(pid, sup, timeout)
       {:error, reason} -> %Result{status: :error, summary: "child not started", error: reason}
     end
   end
 
-  defp await_child(pid, timeout) do
+  defp await_child(pid, sup, timeout) do
     mref = Process.monitor(pid)
 
     receive do
@@ -264,7 +285,7 @@ defmodule NanoAgent.Agent do
     after
       timeout ->
         Process.demonitor(mref, [:flush])
-        DynamicSupervisor.terminate_child(NanoAgent.AgentSupervisor, pid)
+        DynamicSupervisor.terminate_child(sup, pid)
         %Result{status: :error, summary: "child timed out", error: :timeout}
     end
   end
