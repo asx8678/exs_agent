@@ -6,7 +6,14 @@ defmodule NanoAgent.Tools2Test do
   setup do
     tmp = Path.join(System.tmp_dir!(), "tools2_#{System.unique_integer([:positive])}")
     File.mkdir_p!(tmp)
-    on_exit(fn -> File.rm_rf(tmp) end)
+    # local web server is loopback; allow it for the fetch-mechanism tests
+    Application.put_env(:nano_agent, :http_fetch_allow_private, true)
+
+    on_exit(fn ->
+      File.rm_rf(tmp)
+      Application.put_env(:nano_agent, :http_fetch_allow_private, false)
+    end)
+
     {:ok, tmp: tmp}
   end
 

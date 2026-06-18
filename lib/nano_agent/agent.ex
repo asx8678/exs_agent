@@ -96,7 +96,11 @@ defmodule NanoAgent.Agent do
         tool_uses = Enum.filter(content, &(&1["type"] == "tool_use"))
 
         if resp["stop_reason"] == "tool_use" and tool_uses != [] do
-          results = Enum.map(tool_uses, &run_tool(&1, state))
+          pairs = Enum.map(tool_uses, &run_tool(&1, state))
+          results = Enum.map(pairs, &elem(&1, 0))
+          # subagent tokens count toward this agent's budget + reported total
+          child_tokens =
+            Enum.reduce(pairs, zero_tokens(), fn {_r, t}, acc -> add_tokens(acc, t) end)
 
           messages =
             (state.messages ++
@@ -110,7 +114,8 @@ defmodule NanoAgent.Agent do
             state
             | messages: messages,
               iterations: state.iterations + 1,
-              tool_calls: state.tool_calls + real
+              tool_calls: state.tool_calls + real,
+              tokens: add_tokens(state.tokens, child_tokens)
           }
 
           checkpoint(state)
@@ -124,20 +129,25 @@ defmodule NanoAgent.Agent do
     end
   end
 
+  # Returns {tool_result_map, tokens_consumed} — tokens are non-zero only for
+  # spawn_agent (the child's usage).
   defp run_tool(%{"id" => id, "name" => name, "input" => input}, state) do
     ref = state.ref
     Events.publish(ref, :tool_call, %{name: name, input: input})
 
-    output =
+    {output, tokens} =
       cond do
         name == "spawn_agent" -> spawn_child_tool(input, state)
-        name == "todo_write" -> handle_todo(input, state)
-        true -> guarded(ref, name, input)
+        name == "todo_write" -> {handle_todo(input, state), zero_tokens()}
+        true -> {guarded(ref, name, input), zero_tokens()}
       end
 
     Events.publish(ref, :tool_result, %{name: name, output_preview: String.slice(output, 0, 200)})
-    %{"type" => "tool_result", "tool_use_id" => id, "content" => output}
+    {%{"type" => "tool_result", "tool_use_id" => id, "content" => output}, tokens}
   end
+
+  defp zero_tokens, do: %{input: 0, output: 0}
+  defp add_tokens(a, b), do: %{input: a.input + b.input, output: a.output + b.output}
 
   defp guarded(ref, name, input) do
     case gate(ref, name, input) do
@@ -215,17 +225,17 @@ defmodule NanoAgent.Agent do
 
     cond do
       not Application.get_env(:nano_agent, :subagents_enabled, false) ->
-        "error: subagents are disabled"
+        {"error: subagents are disabled", zero_tokens()}
 
       state.depth >= max_depth() ->
-        "error: max subagent depth (#{max_depth()}) reached"
+        {"error: max subagent depth (#{max_depth()}) reached", zero_tokens()}
 
       plan == "" ->
-        "error: spawn_agent requires a non-empty plan"
+        {"error: spawn_agent requires a non-empty plan", zero_tokens()}
 
       true ->
         r = run_child(plan, state.depth + 1)
-        "[subagent #{r.status}] #{r.summary}"
+        {"[subagent #{r.status}] #{r.summary}", r.tokens}
     end
   end
 
@@ -233,8 +243,10 @@ defmodule NanoAgent.Agent do
     ref = make_ref()
     spec = {__MODULE__, %{ref: ref, plan: plan, orchestrator: self(), depth: depth}}
 
+    timeout = Application.get_env(:nano_agent, :agent_timeout_ms, 180_000)
+
     case DynamicSupervisor.start_child(NanoAgent.AgentSupervisor, spec) do
-      {:ok, pid} -> await_child(pid, 180_000)
+      {:ok, pid} -> await_child(pid, timeout)
       {:error, reason} -> %Result{status: :error, summary: "child not started", error: reason}
     end
   end

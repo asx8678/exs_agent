@@ -59,6 +59,10 @@ defmodule NanoAgent.SubagentsTest do
 
     # the child ran as its own persisted agent
     assert Enum.any?(Store.list(), &(&1.summary =~ "child finished"))
+
+    # the child's tokens are folded into the parent's total
+    # parent own output (6 + 5) + child output (5) = 16
+    assert r.tokens.output == 16
   end
 
   test "spawn_agent is unavailable and refused when subagents are disabled" do

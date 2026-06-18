@@ -114,15 +114,30 @@ defmodule NanoAgent.Tools do
 
   # ---- safe execution ----
 
-  @doc "Execute a tool, never raising; truncates large output."
+  @doc "Execute a tool, never raising; truncates large output and scrubs to UTF-8."
   def run(name, input) do
     execute(name, input)
     |> truncate()
+    |> scrub()
   rescue
     e -> "error: #{Exception.message(e)}"
   catch
     :exit, reason -> "error: #{inspect(reason)}"
   end
+
+  # Replace invalid UTF-8 bytes so tool output (binary files, raw bash/http bytes)
+  # can never crash :json.encode downstream in the provider.
+  defp scrub(s) when is_binary(s) do
+    if String.valid?(s), do: s, else: scrub(s, "")
+  end
+
+  defp scrub(<<grapheme::utf8, rest::binary>>, acc),
+    do: scrub(rest, <<acc::binary, grapheme::utf8>>)
+
+  defp scrub(<<_invalid, rest::binary>>, acc),
+    do: scrub(rest, <<acc::binary, "�"::utf8>>)
+
+  defp scrub(<<>>, acc), do: acc
 
   defp truncate(s) when is_binary(s) do
     if byte_size(s) > @max_output_bytes do
@@ -188,12 +203,17 @@ defmodule NanoAgent.Tools do
   end
 
   def execute("http_fetch", %{"url" => url}) when is_binary(url) do
-    request = {String.to_charlist(url), []}
+    max = Application.get_env(:nano_agent, :http_fetch_max_bytes, 200_000)
 
-    case :httpc.request(:get, request, fetch_opts(), body_format: :binary) do
-      {:ok, {{_v, 200, _}, _h, body}} -> body
-      {:ok, {{_v, status, _}, _h, _}} -> "error: HTTP #{status}"
-      {:error, reason} -> "error fetching #{url}: #{inspect(reason)}"
+    cond do
+      not Application.get_env(:nano_agent, :http_fetch_enabled, true) ->
+        "error: http_fetch is disabled"
+
+      not safe_url?(url) ->
+        "error: refusing to fetch private/loopback/unresolvable host"
+
+      true ->
+        fetch(url, max)
     end
   end
 
@@ -306,6 +326,92 @@ defmodule NanoAgent.Tools do
     ]
 
     [ssl: ssl_opts, timeout: 15_000, connect_timeout: 10_000]
+  end
+
+  # ---- http_fetch internals (SSRF guard + bounded download) ----
+
+  defp safe_url?(url) do
+    if Application.get_env(:nano_agent, :http_fetch_allow_private, false) do
+      true
+    else
+      case URI.parse(url) do
+        %URI{scheme: s, host: h} when s in ["http", "https"] and is_binary(h) and h != "" ->
+          not blocked_host?(h)
+
+        _ ->
+          false
+      end
+    end
+  end
+
+  defp blocked_host?(host) do
+    hostc = String.to_charlist(host)
+
+    case :inet.getaddrs(hostc, :inet) do
+      {:ok, addrs} ->
+        Enum.any?(addrs, &private_ipv4?/1)
+
+      _ ->
+        case :inet.getaddrs(hostc, :inet6) do
+          {:ok, addrs6} -> Enum.any?(addrs6, &private_ipv6?/1)
+          # unresolvable -> fail closed
+          _ -> true
+        end
+    end
+  end
+
+  defp private_ipv4?({a, b, _, _}) do
+    a == 127 or a == 10 or a == 0 or
+      (a == 172 and b in 16..31) or
+      (a == 192 and b == 168) or
+      (a == 169 and b == 254) or
+      (a == 100 and b in 64..127)
+  end
+
+  defp private_ipv6?({0, 0, 0, 0, 0, 0, 0, 1}), do: true
+  defp private_ipv6?({0xFE80, _, _, _, _, _, _, _}), do: true
+  defp private_ipv6?({a, _, _, _, _, _, _, _}) when a in 0xFC00..0xFDFF, do: true
+  defp private_ipv6?(_), do: false
+
+  defp fetch(url, max) do
+    case :httpc.request(:get, {String.to_charlist(url), []}, fetch_opts(),
+           sync: false,
+           stream: :self,
+           body_format: :binary
+         ) do
+      {:ok, ref} -> collect_fetch(ref, "", max)
+      {:error, reason} -> "error fetching #{url}: #{inspect(reason)}"
+    end
+  end
+
+  defp collect_fetch(ref, acc, max) do
+    receive do
+      {:http, {^ref, :stream_start, _h}} ->
+        collect_fetch(ref, acc, max)
+
+      {:http, {^ref, :stream, chunk}} ->
+        acc = acc <> chunk
+
+        if byte_size(acc) >= max do
+          :httpc.cancel_request(ref)
+          binary_part(acc, 0, max) <> "\n…[truncated at #{max} bytes]"
+        else
+          collect_fetch(ref, acc, max)
+        end
+
+      {:http, {^ref, :stream_end, _h}} ->
+        acc
+
+      {:http, {^ref, {{_v, status, _r}, _h, _body}}} ->
+        "error: HTTP #{status}"
+
+      {:http, {^ref, {:error, reason}}} ->
+        "error: #{inspect(reason)}"
+    after
+      20_000 ->
+        :httpc.cancel_request(ref)
+        "error: fetch timed out"
+    end
   end
 
   defp compile_regex(pattern) do

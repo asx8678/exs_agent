@@ -7,6 +7,7 @@ defmodule NanoAgent.Tracker do
   use GenServer
 
   @max_events 250
+  @max_runs 500
 
   def start_link(_opts), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
 
@@ -48,6 +49,12 @@ defmodule NanoAgent.Tracker do
           %{run | last_at: at}
       end
 
-    Map.put(runs, key, run)
+    runs = Map.put(runs, key, run)
+    if map_size(runs) > @max_runs, do: evict_oldest(runs), else: runs
+  end
+
+  defp evict_oldest(runs) do
+    {oldest, _} = Enum.min_by(runs, fn {_k, v} -> v.last_at end)
+    Map.delete(runs, oldest)
   end
 end

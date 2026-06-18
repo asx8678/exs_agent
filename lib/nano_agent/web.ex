@@ -62,8 +62,13 @@ defmodule NanoAgent.Web do
     end
   end
 
+  @max_body 1_000_000
+
   defp handle(sock) do
     case read_request(sock) do
+      {:ok, _method, _path, clen} when clen > @max_body ->
+        respond(sock, 413, "text/plain", "request body too large")
+
       {:ok, method, path, clen} ->
         body = if method == :POST and clen > 0, do: read_body(sock, clen), else: ""
         route(sock, method, path, body)

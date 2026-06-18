@@ -68,6 +68,7 @@ defmodule NanoAgent.Store do
     }
 
     :dets.insert(@table, {run_id, record})
+    prune(Application.get_env(:nano_agent, :max_stored_runs, 1000))
     {:reply, :ok, state}
   end
 
@@ -148,4 +149,23 @@ defmodule NanoAgent.Store do
   end
 
   defp now, do: System.system_time(:millisecond)
+
+  # Keep at most `max` runs, deleting the oldest *finished* ones first so in-flight
+  # runs are never dropped.
+  defp prune(max) when is_integer(max) and max > 0 do
+    all =
+      :dets.foldl(fn {id, rec}, acc -> [{id, rec.started_at, rec.status} | acc] end, [], @table)
+
+    over = length(all) - max
+
+    if over > 0 do
+      all
+      |> Enum.filter(fn {_id, _at, status} -> status != :running end)
+      |> Enum.sort_by(fn {_id, at, _status} -> at end)
+      |> Enum.take(over)
+      |> Enum.each(fn {id, _at, _status} -> :dets.delete(@table, id) end)
+    end
+  end
+
+  defp prune(_), do: :ok
 end

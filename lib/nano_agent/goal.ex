@@ -94,7 +94,18 @@ defmodule NanoAgent.Goal do
         plan = Map.fetch!(state.running, ref)
         record(state, ref, plan, %Result{status: :error, summary: "task crashed", error: reason})
     after
-      timeout + 60_000 -> state
+      timeout + 60_000 ->
+        # Safety net: a task ignored its own timeout. Drop every in-flight task as
+        # an error and clear `running` so the scheduler can't loop forever.
+        extra =
+          Enum.map(state.running, fn {_ref, plan} ->
+            %{
+              plan: plan,
+              result: %Result{status: :error, summary: "scheduler timeout", error: :timeout}
+            }
+          end)
+
+        %{state | running: %{}, outcomes: state.outcomes ++ extra}
     end
   end
 

@@ -35,6 +35,19 @@ config :nano_agent, context_max_messages: 40, context_keep_recent: 16
 # supervised child agents, up to max_subagent_depth levels deep.
 config :nano_agent, subagents_enabled: false, max_subagent_depth: 2
 
+# http_fetch tool: blocks private/loopback/link-local hosts (SSRF guard) and caps
+# the download size. Set allow_private: true only in trusted/local setups.
+config :nano_agent,
+  http_fetch_enabled: true,
+  http_fetch_max_bytes: 200_000,
+  http_fetch_allow_private: false
+
+# Run retention: keep at most this many runs in the durable store (0 = unlimited).
+config :nano_agent, max_stored_runs: 1000
+
+# How long to wait on a child/subagent before timing it out.
+config :nano_agent, agent_timeout_ms: 180_000
+
 # Safety (M6). Permissive defaults; tighten per deployment.
 config :nano_agent,
   approvals: :auto_approve,
