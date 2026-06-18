@@ -35,7 +35,11 @@ defmodule NanoAgent.SSE do
 
         %{type: "tool_use", id: id, name: n, json: j} ->
           %{"type" => "tool_use", "id" => id, "name" => n, "input" => decode_input(j)}
+
+        _ ->
+          nil
       end)
+      |> Enum.reject(&is_nil/1)
 
     %{
       "content" => content,
@@ -77,22 +81,28 @@ defmodule NanoAgent.SSE do
   end
 
   defp apply_event(acc, %{"type" => "content_block_delta", "index" => i, "delta" => d}, on_delta) do
-    block = Map.get(acc.blocks, i, %{type: "text", text: ""})
+    # Ignore a delta for an index we never saw a content_block_start for, rather than
+    # fabricating a malformed block.
+    case Map.get(acc.blocks, i) do
+      nil ->
+        acc
 
-    block =
-      case d["type"] do
-        "text_delta" ->
-          if on_delta, do: on_delta.(%{type: :text, text: d["text"]})
-          %{block | text: (block[:text] || "") <> d["text"]}
+      block ->
+        block =
+          case d["type"] do
+            "text_delta" ->
+              if on_delta, do: on_delta.(%{type: :text, text: d["text"]})
+              %{block | text: (block[:text] || "") <> d["text"]}
 
-        "input_json_delta" ->
-          %{block | json: (block[:json] || "") <> d["partial_json"]}
+            "input_json_delta" ->
+              %{block | json: (block[:json] || "") <> d["partial_json"]}
 
-        _ ->
-          block
-      end
+            _ ->
+              block
+          end
 
-    %{acc | blocks: Map.put(acc.blocks, i, block)}
+        %{acc | blocks: Map.put(acc.blocks, i, block)}
+    end
   end
 
   defp apply_event(acc, %{"type" => "message_delta", "delta" => d} = e, _) do

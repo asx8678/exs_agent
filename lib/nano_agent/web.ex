@@ -417,7 +417,7 @@ defmodule NanoAgent.Web do
     <script>
       const runs={}, approvals={};
       const $=id=>document.getElementById(id);
-      const esc=s=>String(s).replace(/[&<]/g,c=>c=='&'?'&amp;':'&lt;');
+      const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
       const shortRef=r=>String(r).replace('#Reference','').replace(/[<>]/g,'').slice(0,14);
 
       function getRun(ref){

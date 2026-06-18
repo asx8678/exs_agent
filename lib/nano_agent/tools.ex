@@ -11,6 +11,7 @@ defmodule NanoAgent.Tools do
 
   @bash_timeout 30_000
   @grep_timeout 15_000
+  @grep_file_cap 2000
   @max_output_bytes 30_000
 
   # ---- specs advertised to the model ----
@@ -426,14 +427,37 @@ defmodule NanoAgent.Tools do
   end
 
   defp do_grep(safe, re) do
-    Path.join(safe, "**/*")
-    |> Path.wildcard()
-    |> Enum.filter(&File.regular?/1)
-    |> Enum.take(2000)
+    # Bounded recursive walk — stops after @grep_file_cap files instead of
+    # materializing the entire tree (Path.wildcard is eager and unbounded).
+    safe
+    |> list_files(@grep_file_cap)
     |> Enum.flat_map(&grep_file(&1, re))
     |> Enum.take(200)
     |> Enum.join("\n")
     |> blank_as("no matches")
+  end
+
+  defp list_files(root, limit) do
+    {files, _n} = walk([root], [], 0, limit)
+    Enum.reverse(files)
+  end
+
+  defp walk(_frontier, acc, n, limit) when n >= limit, do: {acc, n}
+  defp walk([], acc, n, _limit), do: {acc, n}
+
+  defp walk([path | rest], acc, n, limit) do
+    cond do
+      File.regular?(path) -> walk(rest, [path | acc], n + 1, limit)
+      File.dir?(path) -> walk(children(path) ++ rest, acc, n, limit)
+      true -> walk(rest, acc, n, limit)
+    end
+  end
+
+  defp children(dir) do
+    case File.ls(dir) do
+      {:ok, entries} -> Enum.map(entries, &Path.join(dir, &1))
+      _ -> []
+    end
   end
 
   defp grep_file(file, re) do

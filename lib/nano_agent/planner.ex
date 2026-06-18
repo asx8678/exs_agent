@@ -37,10 +37,27 @@ defmodule NanoAgent.Planner do
     with %{"input" => %{"plans" => raw}} <-
            Enum.find(content, &(&1["type"] == "tool_use" and &1["name"] == "submit_plan")),
          plans when plans != [] <- to_plans(raw) do
-      plans
+      sanitize(plans)
     else
       _ -> [%Plan{id: "1", description: goal, depends_on: []}]
     end
+  end
+
+  # Guard against malformed model output: duplicate ids, self-dependencies, and
+  # dependencies on ids that don't exist (which would otherwise wrongly block a plan).
+  defp sanitize(plans) do
+    plans = Enum.uniq_by(plans, & &1.id)
+    ids = MapSet.new(plans, & &1.id)
+
+    Enum.map(plans, fn p ->
+      deps =
+        p.depends_on
+        |> Enum.reject(&(&1 == p.id))
+        |> Enum.filter(&MapSet.member?(ids, &1))
+        |> Enum.uniq()
+
+      %{p | depends_on: deps}
+    end)
   end
 
   defp to_plans(raw) when is_list(raw) do

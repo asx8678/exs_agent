@@ -54,14 +54,23 @@ defmodule NanoAgent.Provider.OpenAI do
     do: [%{role: "user", content: content}]
 
   defp translate_message(%{role: "user", content: parts}) when is_list(parts) do
-    # Anthropic tool_result blocks -> OpenAI role:"tool" messages.
-    Enum.map(parts, fn
-      %{"type" => "tool_result", "tool_use_id" => id, "content" => out} ->
-        %{role: "tool", tool_call_id: id, content: out}
+    # OpenAI requires the run of role:"tool" messages to immediately follow the
+    # assistant tool_calls with no user message interleaved. Emit all tool results
+    # first, then fold any text into a single trailing user message.
+    {tool_results, others} = Enum.split_with(parts, &(&1["type"] == "tool_result"))
 
-      %{"type" => "text", "text" => t} ->
-        %{role: "user", content: t}
-    end)
+    tool_msgs =
+      Enum.map(tool_results, fn %{"tool_use_id" => id, "content" => out} ->
+        %{role: "tool", tool_call_id: id, content: out}
+      end)
+
+    text =
+      others
+      |> Enum.map(& &1["text"])
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join("\n")
+
+    if text == "", do: tool_msgs, else: tool_msgs ++ [%{role: "user", content: text}]
   end
 
   defp translate_message(%{role: "assistant", content: parts}) when is_list(parts) do
