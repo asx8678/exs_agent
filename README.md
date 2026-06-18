@@ -119,8 +119,15 @@ config :nano_agent,
   max_concurrency: 5,          # concurrent agents per goal (greedy pipeline scheduler)
   max_agents: 200,             # global ceiling on live agents across all goals
   max_run_tokens: :infinity,   # per-run token budget; stops with status :budget when hit
-  retry_base_ms: 500           # exp backoff base; transient 5xx/429 retried, Retry-After honored
+  retry_base_ms: 500,          # exp backoff base; transient 5xx/429 retried, Retry-After honored
+  subagents_enabled: false,    # give agents a spawn_agent tool to delegate sub-tasks
+  max_subagent_depth: 2        # ...up to this many levels deep
 ```
+
+With `subagents_enabled: true`, an agent gets a `spawn_agent` tool: it delegates a
+self-contained sub-task to a fresh supervised child agent (its own run, transcript,
+and dashboard card), blocks on the result, and continues — bounded by depth and the
+global `max_agents` cap.
 
 The goal scheduler is a greedy pipeline: each plan starts the instant its
 dependencies clear, not at a wave boundary. Filesystem tools resolve symlinks

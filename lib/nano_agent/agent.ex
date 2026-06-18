@@ -40,6 +40,7 @@ defmodule NanoAgent.Agent do
       tool_calls: Map.get(args, :tool_calls, 0),
       tokens: Map.get(args, :tokens, %{input: 0, output: 0}),
       last_text: "",
+      depth: Map.get(args, :depth, 0),
       started_at: System.monotonic_time(:millisecond)
     }
 
@@ -83,7 +84,7 @@ defmodule NanoAgent.Agent do
   end
 
   defp do_step(state) do
-    case LLM.chat(state.messages, Tools.specs()) do
+    case LLM.chat(state.messages, tool_specs(state)) do
       {:ok, %{"content" => content} = resp} ->
         state =
           state
@@ -93,7 +94,7 @@ defmodule NanoAgent.Agent do
         tool_uses = Enum.filter(content, &(&1["type"] == "tool_use"))
 
         if resp["stop_reason"] == "tool_use" and tool_uses != [] do
-          results = Enum.map(tool_uses, &run_tool(&1, state.ref))
+          results = Enum.map(tool_uses, &run_tool(&1, state))
 
           messages =
             (state.messages ++
@@ -118,18 +119,101 @@ defmodule NanoAgent.Agent do
     end
   end
 
-  defp run_tool(%{"id" => id, "name" => name, "input" => input}, ref) do
+  defp run_tool(%{"id" => id, "name" => name, "input" => input}, state) do
+    ref = state.ref
     Events.publish(ref, :tool_call, %{name: name, input: input})
 
     output =
-      case gate(ref, name, input) do
-        :approved -> Tools.run(name, input)
-        :denied -> "error: tool '#{name}' denied by approval policy"
+      cond do
+        name == "spawn_agent" -> spawn_child_tool(input, state)
+        true -> guarded(ref, name, input)
       end
 
     Events.publish(ref, :tool_result, %{name: name, output_preview: String.slice(output, 0, 200)})
     %{"type" => "tool_result", "tool_use_id" => id, "content" => output}
   end
+
+  defp guarded(ref, name, input) do
+    case gate(ref, name, input) do
+      :approved -> Tools.run(name, input)
+      :denied -> "error: tool '#{name}' denied by approval policy"
+    end
+  end
+
+  # ---- subagents ----
+
+  defp tool_specs(state), do: Tools.specs() ++ subagent_specs(state.depth)
+
+  defp subagent_specs(depth) do
+    if Application.get_env(:nano_agent, :subagents_enabled, false) and depth < max_depth() do
+      [
+        %{
+          name: "spawn_agent",
+          description:
+            "Delegate a self-contained sub-task to a child agent and get its result summary. " <>
+              "Use for independent chunks of work you want handled separately.",
+          input_schema: %{
+            type: "object",
+            properties: %{
+              plan: %{type: "string", description: "Self-contained instruction for the child"}
+            },
+            required: ["plan"]
+          }
+        }
+      ]
+    else
+      []
+    end
+  end
+
+  defp spawn_child_tool(input, state) do
+    plan = input["plan"] || input["goal"] || ""
+
+    cond do
+      not Application.get_env(:nano_agent, :subagents_enabled, false) ->
+        "error: subagents are disabled"
+
+      state.depth >= max_depth() ->
+        "error: max subagent depth (#{max_depth()}) reached"
+
+      plan == "" ->
+        "error: spawn_agent requires a non-empty plan"
+
+      true ->
+        r = run_child(plan, state.depth + 1)
+        "[subagent #{r.status}] #{r.summary}"
+    end
+  end
+
+  defp run_child(plan, depth) do
+    ref = make_ref()
+    spec = {__MODULE__, %{ref: ref, plan: plan, orchestrator: self(), depth: depth}}
+
+    case DynamicSupervisor.start_child(NanoAgent.AgentSupervisor, spec) do
+      {:ok, pid} -> await_child(pid, 180_000)
+      {:error, reason} -> %Result{status: :error, summary: "child not started", error: reason}
+    end
+  end
+
+  defp await_child(pid, timeout) do
+    mref = Process.monitor(pid)
+
+    receive do
+      {:agent_done, ^pid, %Result{} = result} ->
+        Process.demonitor(mref, [:flush])
+        result
+
+      {:DOWN, ^mref, :process, ^pid, reason} ->
+        %Result{status: :error, summary: "child crashed", error: reason}
+    after
+      timeout ->
+        Process.demonitor(mref, [:flush])
+        DynamicSupervisor.terminate_child(NanoAgent.AgentSupervisor, pid)
+        %Result{status: :error, summary: "child timed out", error: :timeout}
+    end
+  end
+
+  defp max_depth, do: Application.get_env(:nano_agent, :max_subagent_depth, 2)
 
   defp gate(ref, name, input) do
     if Safety.requires_approval?(name, input) do

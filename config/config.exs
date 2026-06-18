@@ -30,6 +30,10 @@ config :nano_agent, retry_base_ms: 500
 # the plan + the most recent keep_recent messages (kept on tool-pair boundaries).
 config :nano_agent, context_max_messages: 40, context_keep_recent: 16
 
+# Subagents: when enabled, agents get a spawn_agent tool to delegate sub-tasks to
+# supervised child agents, up to max_subagent_depth levels deep.
+config :nano_agent, subagents_enabled: false, max_subagent_depth: 2
+
 # Safety (M6). Permissive defaults; tighten per deployment.
 config :nano_agent,
   approvals: :auto_approve,
