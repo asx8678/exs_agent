@@ -2,11 +2,13 @@ defmodule NanoAgent.CLI do
   @moduledoc """
   Command-line entrypoint (also the escript `main_module`).
 
-      nano_agent [options] "goal or plan text"
+      nano_agent [options] "goal or plan text"   # run a goal (or --plan)
+      nano_agent history [--json]                # list past runs
+      nano_agent export <run-id> [--json]        # print a run as Markdown or JSON
 
   Options:
     --plan            Treat the text as a single plan (skip goal decomposition)
-    --json            Stream events as NDJSON (one JSON object per line)
+    --json            Stream events as NDJSON; or JSON output for history/export
     --dir DIR         Confine filesystem tools to DIR (enables the sandbox)
     --model MODEL     Override the model
     --concurrency N   Max concurrent agents for a goal (default 5)
@@ -28,17 +30,64 @@ defmodule NanoAgent.CLI do
 
   def run(argv) do
     {opts, rest, _} = OptionParser.parse(argv, switches: @switches, aliases: @aliases)
-    text = Enum.join(rest, " ")
 
-    if text == "" do
-      IO.puts(:stderr, @moduledoc)
-      {:error, :no_input}
-    else
-      {:ok, _} = Application.ensure_all_started(:nano_agent)
-      if opts[:dir], do: configure_sandbox(opts[:dir])
-      execute(text, opts)
+    case rest do
+      ["history" | _] ->
+        started!()
+        cmd_history(opts)
+
+      ["export", id | _] ->
+        started!()
+        cmd_export(id, opts)
+
+      [] ->
+        IO.puts(:stderr, @moduledoc)
+        {:error, :no_input}
+
+      words ->
+        started!()
+        if opts[:dir], do: configure_sandbox(opts[:dir])
+        execute(Enum.join(words, " "), opts)
     end
   end
+
+  defp started!, do: {:ok, _} = Application.ensure_all_started(:nano_agent)
+
+  defp cmd_history(opts) do
+    runs = NanoAgent.history()
+
+    if opts[:json] do
+      runs
+      |> Enum.map(fn r -> Map.take(r, [:id, :status, :summary, :tool_calls]) |> stringify() end)
+      |> then(&IO.puts(:json.encode(&1) |> IO.iodata_to_binary()))
+    else
+      if runs == [], do: IO.puts("(no runs)")
+
+      for r <- runs do
+        IO.puts("#{r.id}  [#{r.status}]  #{String.slice(r.summary, 0, 70)}")
+      end
+    end
+
+    {:ok, :done}
+  end
+
+  defp cmd_export(id, opts) do
+    format = if opts[:json], do: :json, else: :markdown
+
+    case NanoAgent.export(id, format) do
+      {:ok, body} ->
+        IO.puts(body)
+        {:ok, :done}
+
+      {:error, :not_found} ->
+        IO.puts(:stderr, "run not found: #{id}")
+        {:error, :not_found}
+    end
+  end
+
+  defp stringify(map), do: Map.new(map, fn {k, v} -> {to_string(k), to_jsonable(v)} end)
+  defp to_jsonable(v) when is_atom(v) and not is_boolean(v) and not is_nil(v), do: to_string(v)
+  defp to_jsonable(v), do: v
 
   defp execute(text, opts) do
     Events.subscribe(:all)
