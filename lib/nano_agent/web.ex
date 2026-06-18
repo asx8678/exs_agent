@@ -153,9 +153,16 @@ defmodule NanoAgent.Web do
     case Application.get_env(:nano_agent, :web_token) do
       nil -> true
       "" -> true
-      token -> bearer(auth) == token or query["token"] == token
+      token -> secure_eq(bearer(auth), token) or secure_eq(query["token"], token)
     end
   end
+
+  # Constant-time comparison (hash both sides to equal length first) so the token
+  # can't be recovered byte-by-byte via response timing.
+  defp secure_eq(a, b) when is_binary(a) and is_binary(b),
+    do: :crypto.hash_equals(:crypto.hash(:sha256, a), :crypto.hash(:sha256, b))
+
+  defp secure_eq(_, _), do: false
 
   defp bearer(nil), do: nil
 
@@ -436,7 +443,8 @@ defmodule NanoAgent.Web do
     q_js = q |> :json.encode() |> IO.iodata_to_binary()
 
     """
-    <!doctype html><html><head><meta charset="utf-8"><title>nano_agent fleet</title>
+    <!doctype html><html><head><meta charset="utf-8">
+    <meta name="referrer" content="no-referrer"><title>nano_agent fleet</title>
     <style>
       :root{--bg:#0b0e14;--panel:#11151c;--line:#1f2430;--fg:#cdd6f4;--dim:#6c7086}
       *{box-sizing:border-box}
@@ -502,7 +510,7 @@ defmodule NanoAgent.Web do
       const Q=#{q_js};
       const runs={}, approvals={}, goalMeta={};
       const $=id=>document.getElementById(id);
-      const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+      const esc=s=>String(s).replace(/[&<>"'`]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;','`':'&#96;'}[c]));
       const shortRef=r=>String(r).replace('#Reference','').replace(/[<>]/g,'').slice(0,14);
 
       function getRun(ref){
@@ -517,14 +525,15 @@ defmodule NanoAgent.Web do
         const r=getRun(e.ref); r.at=e.at||r.at;
         if(e.type=='started'){r.status='running'; r.plan=p.plan||''; r.run_id=p.run_id||r.run_id; r.goal_id=p.goal_id||r.goal_id;}
         else if(e.type=='todos'){r.todos=p.items;}
-        else if(e.type=='tool_call'){if(p.name!='todo_write')r.tools++; r.tx.push({k:'call',t:p.name+' '+JSON.stringify(p.input||{})});}
-        else if(e.type=='tool_result'){r.tx.push({k:'res',t:(p.name||'')+' → '+(p.output_preview||'')});}
+        else if(e.type=='tool_call'){if(p.name!='todo_write')r.tools++; txpush(r,{k:'call',t:p.name+' '+JSON.stringify(p.input||{})});}
+        else if(e.type=='tool_result'){txpush(r,{k:'res',t:(p.name||'')+' → '+(p.output_preview||'')});}
         else if(['ok','error','max_iterations','budget','cancelled'].includes(e.type)){
           r.status=e.type; r.tokens=p.tokens; r.tools=p.tool_calls!=null?p.tool_calls:r.tools; r.dur=p.duration_ms;
           if(p.goal_id)r.goal_id=p.goal_id; if(p.run_id)r.run_id=p.run_id;
-          if(p.summary) r.tx.push({k:'txt',t:p.summary});
+          if(p.summary) txpush(r,{k:'txt',t:p.summary});
         }
       }
+      function txpush(r,o){ r.tx.push(o); if(r.tx.length>200) r.tx.shift(); }
       function card(r){
         const meta=[r.tools+' tools', r.tokens?(r.tokens.output+' out tok'):'', r.dur?(r.dur+'ms'):''].filter(Boolean).join(' · ');
         const tx=r.tx.slice(-40).map(x=>'<div class="'+(x.k=='call'?'call':x.k=='res'?'res':'txt')+'">'+esc(x.t)+'</div>').join('');

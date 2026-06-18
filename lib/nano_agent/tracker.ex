@@ -33,6 +33,10 @@ defmodule NanoAgent.Tracker do
   def handle_call(:events, _from, state), do: {:reply, Enum.reverse(state.events), state}
   def handle_call(:runs, _from, state), do: {:reply, state.runs, state}
 
+  # Goal-level / approval events aren't runs — don't pollute the per-run rollup.
+  defp rollup(runs, %{type: t}) when t in [:planned, :approval_requested, :approval_resolved],
+    do: runs
+
   defp rollup(runs, %{ref: ref, type: type, at: at}) do
     key = inspect(ref)
     run = Map.get(runs, key, %{status: :running, tool_calls: 0, last_at: at})

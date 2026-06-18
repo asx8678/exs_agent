@@ -99,4 +99,18 @@ defmodule NanoAgent.OrchestrationTest do
     assert_receive {:nano_event, %{type: :ok, payload: %{goal_id: "GP"}}}, 2000
     assert_receive {:nano_event, %{type: :ok, payload: %{goal_id: "GP"}}}, 2000
   end
+
+  test "goal-level events don't create a spurious run in the tracker rollup" do
+    Application.put_env(
+      :nano_agent,
+      :mock,
+      planner_then_agents([%{"id" => "1", "description" => "x", "depends_on" => []}])
+    )
+
+    {:ok, _} = NanoAgent.run_goal("g", goal_id: "GX")
+    # let the tracker process the events
+    _ = NanoAgent.Tracker.events()
+
+    refute Map.has_key?(NanoAgent.Tracker.runs(), inspect(:goal))
+  end
 end

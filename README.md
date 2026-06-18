@@ -121,7 +121,10 @@ curl -XPOST localhost:4000/runs -d '{"plan":"echo hi"}'
 **Security:** the API can run `bash` on the host, so it binds to **127.0.0.1 only**
 by default. To expose it on a network, set `web_bind: "0.0.0.0"` *and* a
 `web_token` — clients then pass `Authorization: Bearer <token>` or `?token=<token>`
-(env: `NANO_WEB_BIND`, `NANO_WEB_TOKEN`). Open the dashboard at `/?token=<token>`.
+(env: `NANO_WEB_BIND`, `NANO_WEB_TOKEN`). Open the dashboard at `/?token=<token>`
+— note the token then lives in the browser URL/history (the page sets
+`referrer: no-referrer` to avoid leaking it onward). The token is compared in
+constant time.
 
 ## Providers
 
