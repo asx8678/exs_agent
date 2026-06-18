@@ -97,6 +97,12 @@ defmodule NanoAgent.CLI do
 
     IO.puts("provider:  #{inspect(provider)}")
     IO.puts("key (#{env || "n/a"}):  #{key_status}")
+
+    case NanoAgent.Config.validate() do
+      [] -> IO.puts("config:    ok")
+      issues -> Enum.each(issues, &IO.puts("config:    ⚠ #{&1}"))
+    end
+
     IO.puts("probing with a minimal request...\n")
 
     case NanoAgent.run("Reply with exactly the single word: ok") do

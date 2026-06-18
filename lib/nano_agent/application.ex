@@ -4,6 +4,8 @@ defmodule NanoAgent.Application do
 
   @impl true
   def start(_type, _args) do
+    NanoAgent.Config.warn!()
+
     children =
       [
         # Zero-dep pub/sub for live events (Registry-based).
