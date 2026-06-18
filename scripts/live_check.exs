@@ -12,31 +12,21 @@ defmodule LiveCheck do
     File.cd!(tmp)
     IO.puts("workdir: #{tmp}\n")
 
+    IO.puts("provider: #{inspect(Application.get_env(:nano_agent, :provider))}\n")
     single_plan()
-    streaming_plan()
     goal()
 
     IO.puts("\n✅ live check complete — workdir: #{tmp}")
   end
 
   defp single_plan do
-    banner("single plan (Anthropic, non-streaming)")
+    banner("single plan (configured provider)")
 
     NanoAgent.run("""
     Use the bash tool to create a file hello.txt containing exactly 'hi from nano',
     then read it back with the read tool and report its contents.
     """)
     |> print_result()
-  end
-
-  defp streaming_plan do
-    banner("single plan (Anthropic, STREAMING provider)")
-    Application.put_env(:nano_agent, :provider, NanoAgent.Provider.AnthropicStream)
-
-    NanoAgent.run("List the files in the current directory using the list tool and count them.")
-    |> print_result()
-  after
-    Application.put_env(:nano_agent, :provider, NanoAgent.Provider.Anthropic)
   end
 
   defp goal do

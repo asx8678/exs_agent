@@ -5,6 +5,7 @@ defmodule NanoAgent.CLI do
       nano_agent [options] "goal or plan text"   # run a goal (or --plan)
       nano_agent history [--json]                # list past runs
       nano_agent export <run-id> [--json]        # print a run as Markdown or JSON
+      nano_agent doctor                          # check provider/key/model connectivity
 
   Options:
     --plan            Treat the text as a single plan (skip goal decomposition)
@@ -39,6 +40,10 @@ defmodule NanoAgent.CLI do
       ["export", id | _] ->
         started!()
         cmd_export(id, opts)
+
+      ["doctor" | _] ->
+        started!()
+        cmd_doctor()
 
       [] ->
         IO.puts(:stderr, @moduledoc)
@@ -84,6 +89,34 @@ defmodule NanoAgent.CLI do
         {:error, :not_found}
     end
   end
+
+  defp cmd_doctor do
+    provider = Application.get_env(:nano_agent, :provider)
+    env = key_env(provider)
+    key_status = if env && System.get_env(env), do: "present", else: "MISSING"
+
+    IO.puts("provider:  #{inspect(provider)}")
+    IO.puts("key (#{env || "n/a"}):  #{key_status}")
+    IO.puts("probing with a minimal request...\n")
+
+    case NanoAgent.run("Reply with exactly the single word: ok") do
+      {:ok, r} ->
+        IO.puts("status:  #{r.status}")
+        IO.puts("tokens:  in #{r.tokens.input} / out #{r.tokens.output}")
+        IO.puts("reply:   #{String.slice(r.summary, 0, 120)}")
+        if r.status == :ok, do: {:ok, :done}, else: {:error, r.status}
+
+      other ->
+        IO.inspect(other, label: "probe failed")
+        {:error, :probe}
+    end
+  end
+
+  defp key_env(NanoAgent.Provider.DeepSeek), do: "DEEPSEEK_API_KEY"
+  defp key_env(NanoAgent.Provider.OpenAI), do: "OPENAI_API_KEY"
+  defp key_env(NanoAgent.Provider.Anthropic), do: "ANTHROPIC_API_KEY"
+  defp key_env(NanoAgent.Provider.AnthropicStream), do: "ANTHROPIC_API_KEY"
+  defp key_env(_), do: nil
 
   defp stringify(map), do: Map.new(map, fn {k, v} -> {to_string(k), to_jsonable(v)} end)
   defp to_jsonable(v) when is_atom(v) and not is_boolean(v) and not is_nil(v), do: to_string(v)
