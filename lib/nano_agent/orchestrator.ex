@@ -33,13 +33,20 @@ defmodule NanoAgent.Orchestrator do
   @impl true
   def handle_cast({:dispatch, ref, plan, reporter}, state) do
     spec = {NanoAgent.Agent, %{ref: ref, plan: plan, orchestrator: self()}}
-    {:ok, pid} = DynamicSupervisor.start_child(NanoAgent.AgentSupervisor, spec)
-    mref = Process.monitor(pid)
 
-    Logger.info("dispatch #{inspect(pid)} :: #{String.slice(plan, 0, 60)}")
+    case DynamicSupervisor.start_child(NanoAgent.AgentSupervisor, spec) do
+      {:ok, pid} ->
+        mref = Process.monitor(pid)
+        Logger.info("dispatch #{inspect(pid)} :: #{String.slice(plan, 0, 60)}")
+        agents = Map.put(state.agents, pid, %{ref: ref, mref: mref, reporter: reporter})
+        {:noreply, %{state | agents: agents}}
 
-    agents = Map.put(state.agents, pid, %{ref: ref, mref: mref, reporter: reporter})
-    {:noreply, %{state | agents: agents}}
+      {:error, reason} ->
+        # e.g. global agent cap reached — fail gracefully instead of crashing.
+        Logger.warning("dispatch refused: #{inspect(reason)}")
+        send(reporter, {:failed, ref, {:start_child, reason}})
+        {:noreply, state}
+    end
   end
 
   @impl true

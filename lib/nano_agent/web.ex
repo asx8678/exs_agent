@@ -119,14 +119,18 @@ defmodule NanoAgent.Web do
   defp start_run(sock, body) do
     case safe_decode(body) do
       %{"plan" => plan} when is_binary(plan) ->
-        run_id = NanoAgent.start_run(plan)
+        case NanoAgent.start_run(plan) do
+          {:ok, run_id} ->
+            respond(
+              sock,
+              202,
+              "application/json",
+              encode(%{"run_id" => run_id, "status" => "running"})
+            )
 
-        respond(
-          sock,
-          202,
-          "application/json",
-          encode(%{"run_id" => run_id, "status" => "running"})
-        )
+          {:error, reason} ->
+            respond(sock, 503, "application/json", encode(%{"error" => inspect(reason)}))
+        end
 
       %{"goal" => goal} when is_binary(goal) ->
         Task.start(fn -> NanoAgent.run_goal(goal) end)

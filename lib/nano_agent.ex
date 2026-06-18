@@ -22,19 +22,19 @@ defmodule NanoAgent do
     run_id = :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
     ref = make_ref()
 
-    {:ok, _pid} =
-      DynamicSupervisor.start_child(
-        NanoAgent.AgentSupervisor,
-        {NanoAgent.Agent,
-         %{
-           ref: ref,
-           run_id: run_id,
-           plan: plan,
-           orchestrator: Process.whereis(NanoAgent.Orchestrator)
-         }}
-      )
+    spec =
+      {NanoAgent.Agent,
+       %{
+         ref: ref,
+         run_id: run_id,
+         plan: plan,
+         orchestrator: Process.whereis(NanoAgent.Orchestrator)
+       }}
 
-    run_id
+    case DynamicSupervisor.start_child(NanoAgent.AgentSupervisor, spec) do
+      {:ok, _pid} -> {:ok, run_id}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   @doc "All persisted runs, newest first."

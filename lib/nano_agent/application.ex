@@ -14,8 +14,11 @@ defmodule NanoAgent.Application do
         NanoAgent.Store,
         # Human-in-the-loop approval gate for flagged tool calls.
         NanoAgent.Approvals,
-        # Spawns one ephemeral Agent process per dispatched plan.
-        {DynamicSupervisor, name: NanoAgent.AgentSupervisor, strategy: :one_for_one},
+        # Spawns one ephemeral Agent process per dispatched plan (globally capped).
+        {DynamicSupervisor,
+         name: NanoAgent.AgentSupervisor,
+         strategy: :one_for_one,
+         max_children: Application.get_env(:nano_agent, :max_agents, :infinity)},
         # Bounded concurrency for goal fan-out.
         {Task.Supervisor, name: NanoAgent.TaskSupervisor},
         # Holds the goal, dispatches plans to agents, collects results.

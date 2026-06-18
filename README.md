@@ -105,6 +105,22 @@ config :nano_agent,
 Destructive bash (`rm -rf`, `mkfs`, …) is always flagged for approval. In `:manual`
 mode, approve via `NanoAgent.Approvals.approve/1` (pending shown on the dashboard).
 
+## Reliability & limits
+
+```elixir
+config :nano_agent,
+  context_max_messages: 40,    # compact agent history past this (on tool-pair boundaries)
+  context_keep_recent: 16,     # ...keeping the plan + this many recent messages
+  max_concurrency: 5,          # concurrent agents per goal (greedy pipeline scheduler)
+  max_agents: 200,             # global ceiling on live agents across all goals
+  max_run_tokens: :infinity,   # per-run token budget; stops with status :budget when hit
+  retry_base_ms: 500           # exp backoff base; transient 5xx/429 retried, Retry-After honored
+```
+
+The goal scheduler is a greedy pipeline: each plan starts the instant its
+dependencies clear, not at a wave boundary. Filesystem tools resolve symlinks
+before the sandbox containment check. Store checkpoints are async (non-blocking).
+
 ## Configuration
 
 App env (see `config/`), overridable at release runtime via env vars

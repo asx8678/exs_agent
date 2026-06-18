@@ -17,7 +17,11 @@ defmodule NanoAgent.Store do
   def start_link(_opts), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
 
   def register(run_id, plan), do: GenServer.call(__MODULE__, {:register, run_id, plan})
-  def checkpoint(run_id, fields), do: GenServer.call(__MODULE__, {:checkpoint, run_id, fields})
+
+  # Fire-and-forget: per-iteration checkpoints must not serialize agents behind
+  # one DETS process. Loss of the last in-flight checkpoint on a hard crash is
+  # acceptable — resume re-issues at most the final tool exchange.
+  def checkpoint(run_id, fields), do: GenServer.cast(__MODULE__, {:checkpoint, run_id, fields})
 
   def finish(run_id, result),
     do: GenServer.call(__MODULE__, {:finish, run_id, result})
@@ -31,15 +35,19 @@ defmodule NanoAgent.Store do
 
   @impl true
   def init(_) do
+    Process.flag(:trap_exit, true)
     dir = Application.get_env(:nano_agent, :data_dir, "data")
     File.mkdir_p!(dir)
     path = dir |> Path.join("runs.dets") |> String.to_charlist()
-    {:ok, _} = :dets.open_file(@table, file: path, type: :set)
+    {:ok, _} = :dets.open_file(@table, file: path, type: :set, auto_save: 5_000)
     {:ok, %{}}
   end
 
   @impl true
-  def terminate(_reason, _state), do: :dets.close(@table)
+  def terminate(_reason, _state) do
+    :dets.sync(@table)
+    :dets.close(@table)
+  end
 
   @impl true
   def handle_call({:register, run_id, plan}, _from, state) do
@@ -62,11 +70,6 @@ defmodule NanoAgent.Store do
     {:reply, :ok, state}
   end
 
-  def handle_call({:checkpoint, run_id, fields}, _from, state) do
-    update(run_id, fn rec -> Map.merge(rec, Map.put(fields, :updated_at, now())) end)
-    {:reply, :ok, state}
-  end
-
   def handle_call({:finish, run_id, result}, _from, state) do
     update(run_id, fn rec ->
       %{
@@ -80,6 +83,7 @@ defmodule NanoAgent.Store do
       }
     end)
 
+    :dets.sync(@table)
     {:reply, :ok, state}
   end
 
@@ -112,6 +116,12 @@ defmodule NanoAgent.Store do
   def handle_call(:clear, _from, state) do
     :dets.delete_all_objects(@table)
     {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_cast({:checkpoint, run_id, fields}, state) do
+    update(run_id, fn rec -> Map.merge(rec, Map.put(fields, :updated_at, now())) end)
+    {:noreply, state}
   end
 
   # ---- helpers ----

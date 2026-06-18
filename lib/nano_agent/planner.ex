@@ -14,18 +14,24 @@ defmodule NanoAgent.Planner do
   `submit_plan` exactly once.
   """
 
-  @spec decompose(String.t()) :: {:ok, [Plan.t()]} | {:error, term()}
+  @spec decompose(String.t()) ::
+          {:ok, [Plan.t()], %{input: non_neg_integer, output: non_neg_integer}} | {:error, term()}
   def decompose(goal) do
     messages = [%{role: "user", content: "Goal:\n#{goal}"}]
 
     case LLM.chat(messages, [submit_plan_spec()], system: @system) do
-      {:ok, %{"content" => content}} ->
-        {:ok, extract_plans(content, goal)}
+      {:ok, %{"content" => content} = resp} ->
+        {:ok, extract_plans(content, goal), usage(resp)}
 
       {:error, reason} ->
         {:error, reason}
     end
   end
+
+  defp usage(%{"usage" => %{} = u}),
+    do: %{input: u["input_tokens"] || 0, output: u["output_tokens"] || 0}
+
+  defp usage(_), do: %{input: 0, output: 0}
 
   defp extract_plans(content, goal) do
     with %{"input" => %{"plans" => raw}} <-

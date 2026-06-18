@@ -63,8 +63,8 @@ defmodule NanoAgent.Provider.AnthropicStream do
       {:http, {^id, {:error, reason}}} ->
         {:error, reason}
 
-      {:http, {^id, {{_v, status, _r}, _h, body}}} ->
-        {:error, {:http, status, body}}
+      {:http, {^id, {{_v, status, _r}, headers, body}}} ->
+        {:error, {:http, status, headers, body}}
     after
       120_000 -> {:error, :timeout}
     end

@@ -12,7 +12,7 @@ defmodule NanoAgent.Agent do
   use GenServer, restart: :temporary
   require Logger
 
-  alias NanoAgent.{LLM, Tools, Result, Events, Store, Safety, Approvals}
+  alias NanoAgent.{LLM, Tools, Result, Events, Store, Safety, Approvals, Context}
 
   @max_iterations 25
 
@@ -67,11 +67,22 @@ defmodule NanoAgent.Agent do
 
   # ---- the tool-use loop ----
 
-  defp run_loop(%{iterations: n} = state) when n >= @max_iterations do
-    result(state, :max_iterations)
+  defp run_loop(state) do
+    cond do
+      state.iterations >= @max_iterations -> result(state, :max_iterations)
+      over_budget?(state) -> result(state, :budget)
+      true -> do_step(state)
+    end
   end
 
-  defp run_loop(state) do
+  defp over_budget?(state) do
+    case Application.get_env(:nano_agent, :max_run_tokens, :infinity) do
+      :infinity -> false
+      max -> state.tokens.input + state.tokens.output >= max
+    end
+  end
+
+  defp do_step(state) do
     case LLM.chat(state.messages, Tools.specs()) do
       {:ok, %{"content" => content} = resp} ->
         state =
@@ -85,8 +96,9 @@ defmodule NanoAgent.Agent do
           results = Enum.map(tool_uses, &run_tool(&1, state.ref))
 
           messages =
-            state.messages ++
-              [%{role: "assistant", content: content}, %{role: "user", content: results}]
+            (state.messages ++
+               [%{role: "assistant", content: content}, %{role: "user", content: results}])
+            |> Context.compact()
 
           state = %{
             state

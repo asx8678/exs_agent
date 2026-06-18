@@ -16,10 +16,10 @@ defmodule NanoAgent.Goal do
   @spec run(String.t(), keyword()) :: {:ok, GoalReport.t()} | {:error, term()}
   def run(goal, opts \\ []) do
     case Planner.decompose(goal) do
-      {:ok, plans} ->
+      {:ok, plans, planner_tokens} ->
         Logger.info("planned #{length(plans)} sub-plan(s) for goal")
         Events.publish(:goal, :planned, %{count: length(plans)})
-        {:ok, schedule(goal, plans, opts)}
+        {:ok, schedule(goal, plans, planner_tokens, opts)}
 
       {:error, reason} ->
         {:error, reason}
@@ -28,54 +28,88 @@ defmodule NanoAgent.Goal do
 
   # ---- scheduler ----
 
-  defp schedule(goal, plans, opts) do
+  defp schedule(goal, plans, planner_tokens, opts) do
     cap = opts[:max_concurrency] || Application.get_env(:nano_agent, :max_concurrency, 5)
     timeout = opts[:agent_timeout] || @agent_timeout
 
-    outcomes =
-      loop(%{pending: plans, succeeded: %{}, outcomes: []}, cap, timeout).outcomes
-
-    build_report(goal, outcomes)
+    state = %{pending: plans, running: %{}, succeeded: %{}, outcomes: []}
+    build_report(goal, drive(state, cap, timeout).outcomes, planner_tokens)
   end
 
-  defp loop(%{pending: []} = state, _cap, _timeout), do: state
+  # Greedy pipeline: dispatch every ready plan as soon as there's capacity, then
+  # block on the *next* completion (not the whole wave) so a fast plan can unblock
+  # its dependents while a slow sibling is still running.
+  defp drive(state, cap, timeout) do
+    state = fill(state, cap, timeout)
 
-  defp loop(state, cap, timeout) do
-    {ready, rest} = Enum.split_with(state.pending, &ready?(&1, state.succeeded))
+    cond do
+      map_size(state.running) > 0 ->
+        state |> await_one(timeout) |> drive(cap, timeout)
 
-    if ready == [] do
-      # Nothing runnable but plans remain -> blocked by failed deps (or a cycle).
-      skipped =
-        Enum.map(rest, fn p ->
-          %{plan: p, result: blocked_result()}
-        end)
+      state.pending == [] ->
+        state
 
-      %{state | pending: [], outcomes: state.outcomes ++ skipped}
-    else
-      results =
-        Task.Supervisor.async_stream_nolink(
-          NanoAgent.TaskSupervisor,
-          ready,
-          fn plan -> {plan, run_plan(plan, context_for(plan, state.succeeded), timeout)} end,
-          max_concurrency: cap,
-          timeout: timeout + 30_000,
-          on_timeout: :kill_task
-        )
-        |> Enum.map(fn
-          {:ok, pair} -> pair
-          {:exit, _reason} -> nil
-        end)
-        |> Enum.reject(&is_nil/1)
-
-      succeeded =
-        Enum.reduce(results, state.succeeded, fn {plan, result}, acc ->
-          if result.status == :ok, do: Map.put(acc, plan.id, result), else: acc
-        end)
-
-      outcomes = state.outcomes ++ Enum.map(results, fn {plan, r} -> %{plan: plan, result: r} end)
-
-      loop(%{state | pending: rest, succeeded: succeeded, outcomes: outcomes}, cap, timeout)
+      true ->
+        # Nothing running, nothing runnable -> remaining plans are blocked.
+        skipped = Enum.map(state.pending, &%{plan: &1, result: blocked_result()})
+        %{state | pending: [], outcomes: state.outcomes ++ skipped}
     end
+  end
+
+  # Start ready plans until capacity is reached or none are ready.
+  defp fill(state, cap, timeout) do
+    if map_size(state.running) < cap do
+      case take_ready(state) do
+        {nil, _} ->
+          state
+
+        {plan, rest} ->
+          task =
+            Task.Supervisor.async_nolink(NanoAgent.TaskSupervisor, fn ->
+              {plan, run_plan(plan, context_for(plan, state.succeeded), timeout)}
+            end)
+
+          %{state | pending: rest, running: Map.put(state.running, task.ref, plan)}
+          |> fill(cap, timeout)
+      end
+    else
+      state
+    end
+  end
+
+  defp take_ready(state) do
+    case Enum.split_with(state.pending, &ready?(&1, state.succeeded)) do
+      {[], _not_ready} -> {nil, state.pending}
+      {[plan | more_ready], not_ready} -> {plan, more_ready ++ not_ready}
+    end
+  end
+
+  defp await_one(state, timeout) do
+    receive do
+      {ref, {plan, %Result{} = result}} when is_map_key(state.running, ref) ->
+        Process.demonitor(ref, [:flush])
+        record(state, ref, plan, result)
+
+      {:DOWN, ref, :process, _pid, reason} when is_map_key(state.running, ref) ->
+        plan = Map.fetch!(state.running, ref)
+        record(state, ref, plan, %Result{status: :error, summary: "task crashed", error: reason})
+    after
+      timeout + 60_000 -> state
+    end
+  end
+
+  defp record(state, ref, plan, result) do
+    succeeded =
+      if result.status == :ok,
+        do: Map.put(state.succeeded, plan.id, result),
+        else: state.succeeded
+
+    %{
+      state
+      | running: Map.delete(state.running, ref),
+        succeeded: succeeded,
+        outcomes: state.outcomes ++ [%{plan: plan, result: result}]
+    }
   end
 
   defp ready?(plan, succeeded), do: Enum.all?(plan.depends_on, &Map.has_key?(succeeded, &1))
@@ -105,12 +139,15 @@ defmodule NanoAgent.Goal do
   defp run_agent(plan, context, timeout) do
     ref = make_ref()
 
-    {:ok, pid} =
-      DynamicSupervisor.start_child(
-        NanoAgent.AgentSupervisor,
-        {Agent, %{ref: ref, plan: plan.description, orchestrator: self(), context: context}}
-      )
+    spec = {Agent, %{ref: ref, plan: plan.description, orchestrator: self(), context: context}}
 
+    case DynamicSupervisor.start_child(NanoAgent.AgentSupervisor, spec) do
+      {:ok, pid} -> await_agent(pid, timeout)
+      {:error, reason} -> %Result{status: :error, summary: "agent not started", error: reason}
+    end
+  end
+
+  defp await_agent(pid, timeout) do
     mref = Process.monitor(pid)
 
     receive do
@@ -130,7 +167,7 @@ defmodule NanoAgent.Goal do
 
   # ---- aggregation ----
 
-  defp build_report(goal, outcomes) do
+  defp build_report(goal, outcomes, planner_tokens) do
     statuses = Enum.map(outcomes, & &1.result.status)
 
     status =
@@ -140,8 +177,9 @@ defmodule NanoAgent.Goal do
         true -> :failed
       end
 
+    # Include the planner's own decomposition call in the token accounting.
     tokens =
-      Enum.reduce(outcomes, %{input: 0, output: 0}, fn %{result: r}, acc ->
+      Enum.reduce(outcomes, planner_tokens, fn %{result: r}, acc ->
         %{input: acc.input + r.tokens.input, output: acc.output + r.tokens.output}
       end)
 

@@ -32,9 +32,11 @@ defmodule NanoAgent.Safety do
         {:ok, path}
 
       root ->
-        root = Path.expand(root)
+        root = canonical(Path.expand(root))
         full = Path.expand(path, root)
-        if within?(full, root), do: {:ok, full}, else: {:error, :denied}
+        # Check the *real* path (symlinks resolved), not just the lexical one, so a
+        # symlink inside the root pointing outside can't be used to escape.
+        if within?(canonical(full), root), do: {:ok, full}, else: {:error, :denied}
     end
   end
 
@@ -44,6 +46,28 @@ defmodule NanoAgent.Safety do
   end
 
   defp within?(path, root), do: path == root or String.starts_with?(path, root <> "/")
+
+  # Resolve symlinks (including symlinked ancestors of a not-yet-existing path).
+  # `fuel` bounds symlink-cycle recursion; exhausting it yields a path that will
+  # fail containment, i.e. fail closed.
+  defp canonical(path, fuel \\ 40)
+  defp canonical(path, 0), do: path
+
+  defp canonical(path, fuel) do
+    case File.read_link(path) do
+      {:ok, target} ->
+        target =
+          if Path.type(target) == :absolute,
+            do: target,
+            else: Path.expand(target, Path.dirname(path))
+
+        canonical(target, fuel - 1)
+
+      {:error, _} ->
+        dir = Path.dirname(path)
+        if dir == path, do: path, else: Path.join(canonical(dir, fuel - 1), Path.basename(path))
+    end
+  end
 
   # ---- bash command policy ----
 

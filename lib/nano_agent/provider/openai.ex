@@ -36,7 +36,7 @@ defmodule NanoAgent.Provider.OpenAI do
 
     case :httpc.request(:post, request, http_opts(), body_format: :binary) do
       {:ok, {{_v, 200, _r}, _h, resp}} -> {:ok, from_openai(:json.decode(resp))}
-      {:ok, {{_v, status, _r}, _h, resp}} -> {:error, {:http, status, resp}}
+      {:ok, {{_v, status, _r}, headers, resp}} -> {:error, {:http, status, headers, resp}}
       {:error, reason} -> {:error, reason}
     end
   end

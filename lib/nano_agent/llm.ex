@@ -33,7 +33,7 @@ defmodule NanoAgent.LLM do
 
       {:error, reason} = err ->
         if attempt < @max_retries and retryable?(reason) do
-          delay = backoff_ms(attempt)
+          delay = backoff_ms(attempt, reason)
           Logger.warning("LLM transient #{inspect(reason)}; retry #{attempt + 1} in #{delay}ms")
           Process.sleep(delay)
           with_retry(fun, attempt + 1)
@@ -43,9 +43,11 @@ defmodule NanoAgent.LLM do
     end
   end
 
-  # HTTP statuses worth retrying.
-  defp retryable?({:http, status, _}) when status in [408, 409, 429, 500, 502, 503, 504], do: true
-  # :httpc / inet transient errors.
+  @retry_status [408, 409, 429, 500, 502, 503, 504]
+
+  # HTTP statuses worth retrying (with or without captured headers).
+  defp retryable?({:http, status, _body}) when status in @retry_status, do: true
+  defp retryable?({:http, status, _headers, _body}) when status in @retry_status, do: true
   defp retryable?({:failed_connect, _}), do: true
 
   defp retryable?(reason) when is_atom(reason),
@@ -53,9 +55,32 @@ defmodule NanoAgent.LLM do
 
   defp retryable?(_), do: false
 
-  defp backoff_ms(attempt) do
+  # Honor a server-provided Retry-After header when present; else exponential backoff.
+  defp backoff_ms(attempt, {:http, _status, headers, _body}),
+    do: retry_after_ms(headers) || exp_backoff(attempt)
+
+  defp backoff_ms(attempt, _reason), do: exp_backoff(attempt)
+
+  defp exp_backoff(attempt) do
     unit = Application.get_env(:nano_agent, :retry_base_ms, 500)
     base = min(round(:math.pow(2, attempt) * unit), 20_000)
     base + :rand.uniform(div(base, 2) + 1)
   end
+
+  defp retry_after_ms(headers) do
+    with value when is_binary(value) <- find_header(headers, "retry-after"),
+         {secs, _} <- Integer.parse(value) do
+      secs * 1000
+    else
+      _ -> nil
+    end
+  end
+
+  defp find_header(headers, name) when is_list(headers) do
+    Enum.find_value(headers, fn {k, v} ->
+      if String.downcase(to_string(k)) == name, do: to_string(v)
+    end)
+  end
+
+  defp find_header(_, _), do: nil
 end

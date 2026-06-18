@@ -17,8 +17,18 @@ config :nano_agent, data_dir: "data"
 # Default fan-out concurrency cap for goals (M5).
 config :nano_agent, max_concurrency: 5
 
+# Global ceiling on simultaneously-live agents (safety valve across all goals).
+config :nano_agent, max_agents: 200
+
+# Per-run token budget guard. :infinity = unlimited; an integer caps total tokens.
+config :nano_agent, max_run_tokens: :infinity
+
 # Base unit (ms) for exponential retry backoff on transient LLM errors.
 config :nano_agent, retry_base_ms: 500
+
+# Context-window management: compact agent history past max_messages, keeping
+# the plan + the most recent keep_recent messages (kept on tool-pair boundaries).
+config :nano_agent, context_max_messages: 40, context_keep_recent: 16
 
 # Safety (M6). Permissive defaults; tighten per deployment.
 config :nano_agent,

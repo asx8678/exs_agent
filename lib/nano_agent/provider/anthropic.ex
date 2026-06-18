@@ -37,8 +37,8 @@ defmodule NanoAgent.Provider.Anthropic do
       {:ok, {{_http, 200, _reason}, _headers, resp_body}} ->
         {:ok, :json.decode(resp_body)}
 
-      {:ok, {{_http, status, _reason}, _headers, resp_body}} ->
-        {:error, {:http, status, resp_body}}
+      {:ok, {{_http, status, _reason}, headers, resp_body}} ->
+        {:error, {:http, status, headers, resp_body}}
 
       {:error, reason} ->
         {:error, reason}
