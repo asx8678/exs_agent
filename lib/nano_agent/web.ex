@@ -27,12 +27,21 @@ defmodule NanoAgent.Web do
   @impl true
   def init(opts) do
     requested = opts[:port] || Application.get_env(:nano_agent, :web_port, 4000)
-    listen_opts = [:binary, packet: :http_bin, active: false, reuseaddr: true, backlog: 32]
+    ip = bind_ip()
+
+    listen_opts = [
+      :binary,
+      {:ip, ip},
+      packet: :http_bin,
+      active: false,
+      reuseaddr: true,
+      backlog: 32
+    ]
 
     case :gen_tcp.listen(requested, listen_opts) do
       {:ok, lsock} ->
         {:ok, port} = :inet.port(lsock)
-        Logger.info("dashboard listening on http://localhost:#{port}")
+        Logger.info("dashboard listening on http://#{:inet.ntoa(ip)}:#{port}")
         spawn_link(fn -> accept_loop(lsock) end)
         {:ok, %{lsock: lsock, port: port}}
 
@@ -75,12 +84,18 @@ defmodule NanoAgent.Web do
 
   defp handle(sock) do
     case read_request(sock) do
-      {:ok, _method, _path, clen} when clen > @max_body ->
+      {:ok, _method, _path, clen, _auth} when clen > @max_body ->
         respond(sock, 413, "text/plain", "request body too large")
 
-      {:ok, method, path, clen} ->
-        body = if method == :POST and clen > 0, do: read_body(sock, clen), else: ""
-        route(sock, method, path, body)
+      {:ok, method, raw_path, clen, auth} ->
+        {path, query} = split_path(raw_path)
+
+        if authorized?(auth, query) do
+          body = if method == :POST and clen > 0, do: read_body(sock, clen), else: ""
+          dispatch(sock, method, path, query, body)
+        else
+          respond(sock, 401, "application/json", encode(%{"error" => "unauthorized"}))
+        end
 
       _ ->
         :gen_tcp.close(sock)
@@ -90,7 +105,7 @@ defmodule NanoAgent.Web do
   @max_headers 100
 
   # packet: :http_bin makes gen_tcp parse the request line + headers for us.
-  defp read_request(sock, acc \\ %{method: nil, path: nil, clen: 0, hn: 0}) do
+  defp read_request(sock, acc \\ %{method: nil, path: nil, clen: 0, hn: 0, auth: nil}) do
     case :gen_tcp.recv(sock, 0, 10_000) do
       {:ok, {:http_request, method, {:abs_path, p}, _v}} ->
         read_request(sock, %{acc | method: method, path: p})
@@ -100,19 +115,61 @@ defmodule NanoAgent.Web do
 
       {:ok, {:http_header, _, name, _, value}} ->
         acc =
-          if String.downcase(to_string(name)) == "content-length",
-            do: %{acc | clen: parse_int(value)},
-            else: acc
+          case String.downcase(to_string(name)) do
+            "content-length" -> %{acc | clen: parse_int(value)}
+            "authorization" -> %{acc | auth: to_string(value)}
+            _ -> acc
+          end
 
         read_request(sock, %{acc | hn: acc.hn + 1})
 
       {:ok, :http_eoh} ->
-        {:ok, acc.method, acc.path, acc.clen}
+        {:ok, acc.method, acc.path, acc.clen, acc.auth}
 
       other ->
         other
     end
   end
+
+  # ---- bind + auth ----
+
+  defp bind_ip do
+    addr = Application.get_env(:nano_agent, :web_bind, "127.0.0.1")
+
+    case :inet.parse_address(String.to_charlist(addr)) do
+      {:ok, ip} -> ip
+      _ -> {127, 0, 0, 1}
+    end
+  end
+
+  defp split_path(raw) do
+    case String.split(raw, "?", parts: 2) do
+      [path, q] -> {path, URI.decode_query(q)}
+      [path] -> {path, %{}}
+    end
+  end
+
+  defp authorized?(auth, query) do
+    case Application.get_env(:nano_agent, :web_token) do
+      nil -> true
+      "" -> true
+      token -> bearer(auth) == token or query["token"] == token
+    end
+  end
+
+  defp bearer(nil), do: nil
+
+  defp bearer(header) do
+    case String.split(String.trim(header)) do
+      ["Bearer", token] -> token
+      _ -> nil
+    end
+  end
+
+  defp dispatch(sock, :GET, "/", query, _body),
+    do: respond(sock, 200, "text/html; charset=utf-8", dashboard_html(query["token"]))
+
+  defp dispatch(sock, method, path, _query, body), do: route(sock, method, path, body)
 
   defp read_body(sock, clen) do
     :inet.setopts(sock, packet: :raw)
@@ -124,9 +181,6 @@ defmodule NanoAgent.Web do
   end
 
   # ---- routing ----
-
-  defp route(sock, :GET, "/", _),
-    do: respond(sock, 200, "text/html; charset=utf-8", dashboard_html())
 
   defp route(sock, :GET, "/api/events", _),
     do: respond(sock, 200, "application/json", snapshot_json())
@@ -370,7 +424,10 @@ defmodule NanoAgent.Web do
 
   # ---- dashboard page ----
 
-  defp dashboard_html do
+  defp dashboard_html(token) do
+    q = if token in [nil, ""], do: "", else: "?token=" <> URI.encode_www_form(token)
+    q_js = q |> :json.encode() |> IO.iodata_to_binary()
+
     """
     <!doctype html><html><head><meta charset="utf-8"><title>nano_agent fleet</title>
     <style>
@@ -415,6 +472,7 @@ defmodule NanoAgent.Web do
     <div id="approvals"></div>
     <div id="grid"></div>
     <script>
+      const Q=#{q_js};
       const runs={}, approvals={};
       const $=id=>document.getElementById(id);
       const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -468,21 +526,21 @@ defmodule NanoAgent.Web do
         }).join('');
       }
       function decide(id,decision){
-        fetch('/approvals/'+id,{method:'POST',headers:{'Content-Type':'application/json'},
+        fetch('/approvals/'+id+Q,{method:'POST',headers:{'Content-Type':'application/json'},
           body:JSON.stringify({decision})}); delete approvals[id]; render();
       }
       Promise.all([
-        fetch('/api/events').then(r=>r.json()).then(es=>es.forEach(apply)).catch(()=>{}),
-        fetch('/api/approvals').then(r=>r.json()).then(as=>as.forEach(a=>approvals[a.id]=a)).catch(()=>{})
+        fetch('/api/events'+Q).then(r=>r.json()).then(es=>es.forEach(apply)).catch(()=>{}),
+        fetch('/api/approvals'+Q).then(r=>r.json()).then(as=>as.forEach(a=>approvals[a.id]=a)).catch(()=>{})
       ]).then(render);
       function loadStats(){
-        fetch('/api/metrics').then(r=>r.json()).then(m=>{
+        fetch('/api/metrics'+Q).then(r=>r.json()).then(m=>{
           $('stats').innerHTML='<span>tok in/out <b>'+m.tokens.input+'/'+m.tokens.output+
             '</b></span><span>dur p50/p95 <b>'+m.duration_ms.p50+'/'+m.duration_ms.p95+'ms</b></span>';
         }).catch(()=>{});
       }
       loadStats(); setInterval(loadStats,3000);
-      const src=new EventSource('/events');
+      const src=new EventSource('/events'+Q);
       src.onmessage=ev=>{try{apply(JSON.parse(ev.data));render()}catch(e){}};
     </script></body></html>
     """

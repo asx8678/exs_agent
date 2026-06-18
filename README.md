@@ -117,6 +117,11 @@ curl -XPOST localhost:4000/runs -d '{"plan":"echo hi"}'
 #=> {"run_id":"...","status":"running"}
 ```
 
+**Security:** the API can run `bash` on the host, so it binds to **127.0.0.1 only**
+by default. To expose it on a network, set `web_bind: "0.0.0.0"` *and* a
+`web_token` — clients then pass `Authorization: Bearer <token>` or `?token=<token>`
+(env: `NANO_WEB_BIND`, `NANO_WEB_TOKEN`). Open the dashboard at `/?token=<token>`.
+
 ## Providers
 
 Pluggable via the `NanoAgent.Provider` behaviour. Select with

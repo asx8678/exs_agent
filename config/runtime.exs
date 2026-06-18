@@ -11,6 +11,14 @@ if System.get_env("NANO_WEB_DISABLED") in ~w(1 true yes) do
   config :nano_agent, web_enabled: false
 end
 
+if bind = System.get_env("NANO_WEB_BIND") do
+  config :nano_agent, web_bind: bind
+end
+
+if token = System.get_env("NANO_WEB_TOKEN") do
+  config :nano_agent, web_token: token
+end
+
 if dir = System.get_env("NANO_DATA_DIR") do
   config :nano_agent, data_dir: dir
 end

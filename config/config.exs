@@ -9,8 +9,15 @@ config :nano_agent, provider: NanoAgent.Provider.DeepSeek
 # Sandbox (M6). Permissive until enforce: true with a root is set.
 config :nano_agent, sandbox: []
 
-# Live dashboard (M3).
-config :nano_agent, web_enabled: true, web_port: 4000
+# Live dashboard (M3). Binds to loopback by default — the API can run bash on the
+# host, so only expose it on a network behind a token. Set web_bind: "0.0.0.0" and
+# web_token: "secret" to expose it; clients then pass `Authorization: Bearer secret`
+# or `?token=secret`.
+config :nano_agent,
+  web_enabled: true,
+  web_port: 4000,
+  web_bind: "127.0.0.1",
+  web_token: nil
 
 # Durable run history (M4).
 config :nano_agent, data_dir: "data"
