@@ -29,6 +29,8 @@ defmodule NanoAgent.Agent do
     messages = Map.get(args, :messages) || [%{role: "user", content: build_prompt(plan, context)}]
 
     unless resuming?, do: Store.register(run_id, plan)
+    # Register so the run can be cancelled by id (auto-removed when this dies).
+    Registry.register(NanoAgent.AgentRegistry, run_id, nil)
 
     state = %{
       ref: ref,

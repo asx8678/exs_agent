@@ -51,6 +51,19 @@ defmodule NanoAgent do
   @doc "Re-run any interrupted (`:running`) runs from their saved state."
   def resume, do: NanoAgent.Resume.resume_all()
 
+  @doc "Cancel a running run by id: stop its agent and mark it `:cancelled`."
+  def cancel(run_id) do
+    case Registry.lookup(NanoAgent.AgentRegistry, run_id) do
+      [{pid, _} | _] ->
+        DynamicSupervisor.terminate_child(NanoAgent.AgentSupervisor, pid)
+        NanoAgent.Store.cancel(run_id)
+        :ok
+
+      [] ->
+        {:error, :not_running}
+    end
+  end
+
   @doc """
   Run a single plan and block until the agent reports back.
   Returns `{:ok, %NanoAgent.Result{}}` or `{:failed, reason}`.

@@ -8,6 +8,8 @@ defmodule NanoAgent.Application do
       [
         # Zero-dep pub/sub for live events (Registry-based).
         NanoAgent.Events,
+        # run_id -> agent pid, so runs can be cancelled.
+        {Registry, keys: :unique, name: NanoAgent.AgentRegistry},
         # In-memory rollup of recent activity for the dashboard.
         NanoAgent.Tracker,
         # Durable run history (DETS) for inspection + crash-resume.

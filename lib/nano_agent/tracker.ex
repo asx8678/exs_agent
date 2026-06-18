@@ -38,9 +38,14 @@ defmodule NanoAgent.Tracker do
 
     run =
       case type do
-        :tool_call -> %{run | tool_calls: run.tool_calls + 1, last_at: at}
-        t when t in [:ok, :error, :max_iterations, :budget] -> %{run | status: t, last_at: at}
-        _ -> %{run | last_at: at}
+        :tool_call ->
+          %{run | tool_calls: run.tool_calls + 1, last_at: at}
+
+        t when t in [:ok, :error, :max_iterations, :budget, :cancelled] ->
+          %{run | status: t, last_at: at}
+
+        _ ->
+          %{run | last_at: at}
       end
 
     Map.put(runs, key, run)

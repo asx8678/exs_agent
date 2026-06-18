@@ -1,7 +1,7 @@
 defmodule NanoAgent.Result do
   @moduledoc "The outcome of an agent executing a plan."
 
-  @type status :: :ok | :max_iterations | :budget | :error
+  @type status :: :ok | :max_iterations | :budget | :error | :cancelled
 
   @type t :: %__MODULE__{
           status: status,

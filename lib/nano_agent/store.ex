@@ -26,6 +26,7 @@ defmodule NanoAgent.Store do
   def finish(run_id, result),
     do: GenServer.call(__MODULE__, {:finish, run_id, result})
 
+  def cancel(run_id), do: GenServer.call(__MODULE__, {:cancel, run_id})
   def get(run_id), do: GenServer.call(__MODULE__, {:get, run_id})
   def list, do: GenServer.call(__MODULE__, :list)
   def running, do: GenServer.call(__MODULE__, :running)
@@ -83,6 +84,12 @@ defmodule NanoAgent.Store do
       }
     end)
 
+    :dets.sync(@table)
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:cancel, run_id}, _from, state) do
+    update(run_id, fn rec -> %{rec | status: :cancelled, updated_at: now()} end)
     :dets.sync(@table)
     {:reply, :ok, state}
   end

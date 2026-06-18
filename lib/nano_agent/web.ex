@@ -130,9 +130,26 @@ defmodule NanoAgent.Web do
   defp route(sock, :POST, "/runs", body), do: start_run(sock, body)
 
   defp route(sock, :GET, "/runs/" <> rest, _) when rest != "", do: run_route(sock, rest)
+  defp route(sock, :POST, "/runs/" <> rest, _) when rest != "", do: post_run_route(sock, rest)
   defp route(sock, :POST, "/approvals/" <> id, body) when id != "", do: decide(sock, id, body)
 
   defp route(sock, _method, _path, _body), do: respond(sock, 404, "text/plain", "not found")
+
+  defp post_run_route(sock, rest) do
+    case String.split(rest, "/") do
+      [id, "cancel"] ->
+        case NanoAgent.cancel(id) do
+          :ok ->
+            respond(sock, 200, "application/json", encode(%{"ok" => true}))
+
+          {:error, reason} ->
+            respond(sock, 404, "application/json", encode(%{"error" => to_string(reason)}))
+        end
+
+      _ ->
+        respond(sock, 404, "text/plain", "not found")
+    end
+  end
 
   defp run_route(sock, rest) do
     case String.split(rest, "/") do
