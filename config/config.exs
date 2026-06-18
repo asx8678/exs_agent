@@ -24,6 +24,7 @@ config :nano_agent, retry_base_ms: 500
 config :nano_agent,
   approvals: :auto_approve,
   approval_tools: [],
+  approval_timeout_ms: 300_000,
   bash_policy: []
 
 import_config "#{config_env()}.exs"

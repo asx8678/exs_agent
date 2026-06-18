@@ -46,8 +46,11 @@ defmodule NanoAgent.Web do
   defp accept_loop(lsock) do
     case :gen_tcp.accept(lsock) do
       {:ok, sock} ->
-        pid = spawn(fn -> handle(sock) end)
+        # Transfer ownership BEFORE the handler touches the socket, otherwise it
+        # may recv / go active before it owns the socket (races on SSE delivery).
+        pid = spawn(fn -> receive do: (:go -> handle(sock)) end)
         :gen_tcp.controlling_process(sock, pid)
+        send(pid, :go)
         accept_loop(lsock)
 
       {:error, :closed} ->

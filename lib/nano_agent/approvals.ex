@@ -38,21 +38,35 @@ defmodule NanoAgent.Approvals do
     })
 
     case Application.get_env(:nano_agent, :approvals, :auto_approve) do
-      :auto_approve -> {:reply, :approved, state}
-      :auto_deny -> {:reply, :denied, state}
-      :manual -> {:noreply, put_in(state.pending[id], from)}
+      :auto_approve ->
+        {:reply, :approved, state}
+
+      :auto_deny ->
+        {:reply, :denied, state}
+
+      :manual ->
+        # Default to deny if no human acts within the timeout — never hang the agent.
+        ms = Application.get_env(:nano_agent, :approval_timeout_ms, 300_000)
+        timer = Process.send_after(self(), {:timeout, id}, ms)
+        {:noreply, put_in(state.pending[id], {from, timer})}
     end
   end
 
   def handle_call(:pending, _from, state), do: {:reply, Map.keys(state.pending), state}
 
   @impl true
-  def handle_cast({:resolve, id, decision}, state) do
+  def handle_cast({:resolve, id, decision}, state), do: resolve(state, id, decision)
+
+  @impl true
+  def handle_info({:timeout, id}, state), do: resolve(state, id, :denied)
+
+  defp resolve(state, id, decision) do
     case Map.pop(state.pending, id) do
       {nil, _} ->
         {:noreply, state}
 
-      {from, pending} ->
+      {{from, timer}, pending} ->
+        Process.cancel_timer(timer)
         GenServer.reply(from, decision)
         NanoAgent.Events.publish(:approvals, :approval_resolved, %{id: id, decision: decision})
         {:noreply, %{state | pending: pending}}
