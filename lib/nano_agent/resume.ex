@@ -20,22 +20,29 @@ defmodule NanoAgent.Resume do
     timeout = opts[:agent_timeout] || @agent_timeout
     ref = make_ref()
 
-    {:ok, pid} =
-      DynamicSupervisor.start_child(
-        NanoAgent.AgentSupervisor,
-        {Agent,
-         %{
-           ref: ref,
-           run_id: run.id,
-           plan: run.plan,
-           orchestrator: self(),
-           messages: run.messages,
-           iterations: run.iterations,
-           tool_calls: run.tool_calls,
-           tokens: run.tokens
-         }}
-      )
+    spec =
+      {Agent,
+       %{
+         ref: ref,
+         run_id: run.id,
+         plan: run.plan,
+         orchestrator: self(),
+         messages: run.messages,
+         iterations: run.iterations,
+         tool_calls: run.tool_calls,
+         tokens: run.tokens
+       }}
 
+    case DynamicSupervisor.start_child(NanoAgent.AgentSupervisor, spec) do
+      {:ok, pid} ->
+        await_resumed(run, pid, timeout)
+
+      {:error, reason} ->
+        {run.id, %Result{status: :error, summary: "resume not started", error: reason}}
+    end
+  end
+
+  defp await_resumed(run, pid, timeout) do
     mref = Process.monitor(pid)
 
     receive do

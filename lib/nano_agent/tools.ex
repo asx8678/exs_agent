@@ -10,6 +10,7 @@ defmodule NanoAgent.Tools do
   alias NanoAgent.Safety
 
   @bash_timeout 30_000
+  @grep_timeout 15_000
   @max_output_bytes 30_000
 
   # ---- specs advertised to the model ----
@@ -255,14 +256,13 @@ defmodule NanoAgent.Tools do
 
     with {:ok, re} <- compile_regex(pattern),
          {:ok, safe} <- Safety.resolve(root) do
-      Path.join(safe, "**/*")
-      |> Path.wildcard()
-      |> Enum.filter(&File.regular?/1)
-      |> Enum.take(2000)
-      |> Enum.flat_map(&grep_file(&1, re))
-      |> Enum.take(200)
-      |> Enum.join("\n")
-      |> blank_as("no matches")
+      # Bound the scan: a pathological regex (ReDoS) or huge tree must not hang the agent.
+      task = Task.async(fn -> do_grep(safe, re) end)
+
+      case Task.yield(task, @grep_timeout) || Task.shutdown(task, :brutal_kill) do
+        {:ok, result} -> result
+        nil -> "error: grep timed out after #{@grep_timeout}ms"
+      end
     else
       {:error, :denied} -> "error: path '#{root}' is outside the allowed root"
       {:error, {:regex, msg}} -> "error: bad regex: #{msg}"
@@ -327,7 +327,9 @@ defmodule NanoAgent.Tools do
       customize_hostname_check: [match_fun: :public_key.pkix_verify_hostname_match_fun(:https)]
     ]
 
-    [ssl: ssl_opts, timeout: 15_000, connect_timeout: 10_000]
+    # autoredirect: false — a 30x to a private IP would otherwise bypass the SSRF
+    # host check below. Redirects are surfaced as an HTTP error instead of followed.
+    [ssl: ssl_opts, timeout: 15_000, connect_timeout: 10_000, autoredirect: false]
   end
 
   # ---- http_fetch internals (SSRF guard + bounded download) ----
@@ -421,6 +423,17 @@ defmodule NanoAgent.Tools do
       {:ok, re} -> {:ok, re}
       {:error, {msg, _at}} -> {:error, {:regex, to_string(msg)}}
     end
+  end
+
+  defp do_grep(safe, re) do
+    Path.join(safe, "**/*")
+    |> Path.wildcard()
+    |> Enum.filter(&File.regular?/1)
+    |> Enum.take(2000)
+    |> Enum.flat_map(&grep_file(&1, re))
+    |> Enum.take(200)
+    |> Enum.join("\n")
+    |> blank_as("no matches")
   end
 
   defp grep_file(file, re) do

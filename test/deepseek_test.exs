@@ -4,6 +4,7 @@ defmodule NanoAgent.DeepSeekTest do
   alias NanoAgent.Provider.DeepSeek
 
   test "implements the Provider behaviour" do
+    {:module, _} = Code.ensure_loaded(DeepSeek)
     assert function_exported?(DeepSeek, :chat, 3)
   end
 

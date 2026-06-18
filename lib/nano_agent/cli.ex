@@ -41,6 +41,10 @@ defmodule NanoAgent.CLI do
         started!()
         cmd_export(id, opts)
 
+      ["export"] ->
+        IO.puts(:stderr, "usage: nano_agent export <run-id> [--json]")
+        {:error, :no_run_id}
+
       ["doctor" | _] ->
         started!()
         cmd_doctor()
